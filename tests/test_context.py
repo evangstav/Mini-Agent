@@ -10,8 +10,8 @@ from mini_agent.context import (
     SystemPromptBuilder,
     ToolResultStore,
     compact_messages,
+    compute_compact_threshold,
     estimate_tokens,
-    prune_tool_results,
 )
 from mini_agent.schema import LLMResponse, Message
 
@@ -75,6 +75,31 @@ class TestEstimateTokens:
         )
 
 
+# --- Compaction Threshold ---
+
+
+class TestComputeCompactThreshold:
+    def test_default_values(self):
+        # 200_000 * 0.85 - 20_000 = 150_000
+        assert compute_compact_threshold() == 150_000
+
+    def test_custom_window(self):
+        # 100_000 * 0.85 - 20_000 = 65_000
+        assert compute_compact_threshold(context_window=100_000) == 65_000
+
+    def test_custom_pct(self):
+        # 200_000 * 0.90 - 20_000 = 160_000
+        assert compute_compact_threshold(compact_threshold_pct=0.90) == 160_000
+
+    def test_custom_reserve(self):
+        # 200_000 * 0.85 - 10_000 = 160_000
+        assert compute_compact_threshold(compaction_reserve=10_000) == 160_000
+
+    def test_all_custom(self):
+        # 128_000 * 0.90 - 15_000 = 100_200
+        assert compute_compact_threshold(128_000, 0.90, 15_000) == 100_200
+
+
 # --- Context Compaction ---
 
 
@@ -95,8 +120,7 @@ async def test_compact_summarizes_old_turns():
     """When over threshold, old turns are summarized."""
     mock_llm = AsyncMock()
     mock_llm.generate.return_value = LLMResponse(
-        content="## Completed Work\n- Fixed bug\n## Current File State\n- main.py modified",
-        finish_reason="stop",
+        content="Summary of prior work.", finish_reason="stop"
     )
 
     # Build messages that exceed a low threshold
@@ -114,11 +138,11 @@ async def test_compact_summarizes_old_turns():
 
 
 @pytest.mark.asyncio
-async def test_compact_uses_structured_template():
-    """Compaction prompt includes structured sections."""
+async def test_compact_percentage_based():
+    """Percentage-based threshold triggers compaction correctly."""
     mock_llm = AsyncMock()
     mock_llm.generate.return_value = LLMResponse(
-        content="## Completed Work\n- Done stuff", finish_reason="stop"
+        content="Summary.", finish_reason="stop"
     )
 
     msgs = [Message(role="system", content="sys")]
@@ -126,18 +150,31 @@ async def test_compact_uses_structured_template():
         msgs.append(Message(role="user", content=f"question {i} " * 50))
         msgs.append(Message(role="assistant", content=f"answer {i} " * 50))
 
-    await compact_messages(msgs, mock_llm, token_threshold=100, keep_recent=4)
+    # Use percentage-based threshold with a tiny context window so it triggers
+    result = await compact_messages(
+        msgs, mock_llm, keep_recent=4,
+        context_window=200, compact_threshold_pct=0.85, compaction_reserve=0,
+    )
 
-    # Verify the prompt sent to LLM contains structured sections
-    call_args = mock_llm.generate.call_args
-    prompt_messages = call_args.kwargs.get("messages") or call_args[1].get("messages") or call_args[0][0]
-    user_prompt = prompt_messages[1].content
+    assert result[0].role == "system"
+    assert "Context summary" in result[1].content
+    assert len(result) == 6
 
-    assert "## Completed Work" in user_prompt
-    assert "## Current File State" in user_prompt
-    assert "## Active Tasks" in user_prompt
-    assert "## Next Steps" in user_prompt
-    assert "## Key Decisions & Constraints" in user_prompt
+
+@pytest.mark.asyncio
+async def test_compact_explicit_threshold_overrides_pct():
+    """Explicit token_threshold takes precedence over percentage calculation."""
+    msgs = [
+        Message(role="system", content="sys"),
+        Message(role="user", content="hi"),
+        Message(role="assistant", content="hello"),
+    ]
+    # Percentage would trigger (tiny window) but explicit threshold is huge
+    result = await compact_messages(
+        msgs, AsyncMock(), token_threshold=999_999,
+        context_window=10, compact_threshold_pct=0.5, compaction_reserve=0,
+    )
+    assert result == msgs  # No compaction because explicit threshold wins
 
 
 @pytest.mark.asyncio
@@ -189,70 +226,3 @@ class TestSystemPromptBuilder:
         prompt = builder.build()
         # Should include git info since we're in a repo
         assert "Branch:" in prompt or "Git Context" not in prompt
-
-
-# --- Tool Result Pruning ---
-
-
-class TestPruneToolResults:
-    def test_empty_messages(self):
-        assert prune_tool_results([]) == []
-
-    def test_no_pruning_within_protection_window(self):
-        """Large tool results within protection window are kept."""
-        msgs = [
-            Message(role="system", content="sys"),
-            Message(role="user", content="do stuff"),
-            Message(role="tool", content="x" * 100_000, tool_call_id="c1", name="bash"),
-        ]
-        result = prune_tool_results(msgs, protect_chars=200_000)
-        assert result[2].content == "x" * 100_000
-
-    def test_prunes_large_tool_result_outside_window(self):
-        """Large tool results beyond protection window get pruned."""
-        # Build: old large tool result, then enough recent content to push it outside window
-        msgs = [
-            Message(role="system", content="sys"),
-            Message(role="tool", content="A" * 100_000, tool_call_id="old", name="bash"),
-            Message(role="user", content="B" * 50_000),
-            Message(role="assistant", content="C" * 50_000),
-            Message(role="user", content="D" * 50_000),
-            Message(role="assistant", content="E" * 50_000),
-        ]
-        # protect_chars=160K, prune_threshold=80K
-        # Recent content (scanning backward): E(50K) + D(50K) + C(50K) + B(50K) = 200K
-        # The old tool result (100K) is beyond the 160K window and > 80K threshold
-        result = prune_tool_results(msgs, protect_chars=160_000, prune_threshold=80_000)
-        assert "pruned" in result[1].content.lower()
-        assert result[1].tool_call_id == "old"
-        assert result[1].name == "bash"
-
-    def test_preserves_small_tool_results_outside_window(self):
-        """Small tool results beyond protection window are kept."""
-        msgs = [
-            Message(role="system", content="sys"),
-            Message(role="tool", content="small", tool_call_id="old", name="bash"),
-            Message(role="user", content="B" * 200_000),
-        ]
-        result = prune_tool_results(msgs, protect_chars=100_000, prune_threshold=80_000)
-        assert result[1].content == "small"
-
-    def test_preserves_non_tool_messages(self):
-        """User/assistant messages are never pruned even if large and outside window."""
-        msgs = [
-            Message(role="system", content="sys"),
-            Message(role="user", content="X" * 100_000),
-            Message(role="assistant", content="Y" * 200_000),
-        ]
-        result = prune_tool_results(msgs, protect_chars=1000, prune_threshold=500)
-        assert result[1].content == "X" * 100_000
-        assert result[2].content == "Y" * 200_000
-
-    def test_returns_same_list_when_nothing_to_prune(self):
-        """Returns original list reference when no pruning needed."""
-        msgs = [
-            Message(role="system", content="sys"),
-            Message(role="user", content="hi"),
-        ]
-        result = prune_tool_results(msgs)
-        assert result is msgs

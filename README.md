@@ -76,7 +76,8 @@ agent = Agent(
     system_prompt="You are a helpful assistant.",
     tools=tools,
     tool_result_store=ToolResultStore(),   # Persist large results to disk
-    compact_threshold=80_000,               # Auto-summarize when context is large
+    context_window=200_000,                  # Total context window (tokens)
+    compact_threshold_pct=0.85,              # Compact at 85% of context window
     project_dir=".",                        # Inject CLAUDE.md + git info
 )
 ```
