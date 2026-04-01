@@ -131,24 +131,31 @@ class Agent:
                             ),
                         )
 
-                # Think: call LLM
+                # Think: call LLM with streaming
                 try:
-                    response = await self.llm.generate(
+                    response = None
+                    async for delta in self.llm.generate_stream(
                         messages=self.messages, tools=list(self.tools.values())
-                    )
+                    ):
+                        if delta.type == "text_delta":
+                            yield TextChunk(content=delta.text)
+                        elif delta.type == "thinking_delta":
+                            yield ThinkingChunk(content=delta.text)
+                        elif delta.type == "message_complete":
+                            response = delta.response
+
+                    if response is None:
+                        error_event = AgentError(
+                            error="LLM stream ended without message_complete", steps=step
+                        )
+                        await self._emit_session_end(error_event)
+                        yield error_event
+                        return
                 except Exception as e:
                     error_event = AgentError(error=f"LLM call failed: {e}", steps=step)
                     await self._emit_session_end(error_event)
                     yield error_event
                     return
-
-                # Emit thinking if present
-                if response.thinking:
-                    yield ThinkingChunk(content=response.thinking)
-
-                # Emit text content if present
-                if response.content:
-                    yield TextChunk(content=response.content)
 
                 # Record assistant message
                 assistant_msg = Message(

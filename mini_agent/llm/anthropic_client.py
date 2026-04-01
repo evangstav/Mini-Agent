@@ -1,12 +1,13 @@
 """Anthropic LLM client implementation."""
 
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import anthropic
 
 from ..retry import RetryConfig, async_retry
-from ..schema import FunctionCall, LLMResponse, Message, TokenUsage, ToolCall
+from ..schema import FunctionCall, LLMResponse, Message, StreamDelta, TokenUsage, ToolCall
 from .base import LLMClientBase
 
 logger = logging.getLogger(__name__)
@@ -314,3 +315,98 @@ class AnthropicClient(LLMClientBase):
 
         # Parse and return response
         return self._parse_response(response)
+
+    async def generate_stream(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+    ) -> AsyncIterator[StreamDelta]:
+        """Stream response from Anthropic LLM, yielding deltas as tokens arrive.
+
+        Uses client.messages.stream() for real-time token delivery.
+        Token usage and tool calls are accumulated and delivered in the
+        final message_complete event.
+        """
+        request_params = self._prepare_request(messages, tools)
+
+        params: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": request_params["api_messages"],
+        }
+        if request_params["system_message"]:
+            params["system"] = request_params["system_message"]
+        if request_params["tools"]:
+            params["tools"] = self._convert_tools(request_params["tools"])
+
+        # Accumulate full content for the final LLMResponse
+        text_content = ""
+        thinking_content = ""
+        tool_calls: list[ToolCall] = []
+        current_tool: dict[str, Any] | None = None
+        input_json_buf = ""
+
+        async with self.client.messages.stream(**params) as stream:
+            async for event in stream:
+                event_type = event.type
+
+                if event_type == "content_block_start":
+                    block = event.content_block
+                    if block.type == "tool_use":
+                        current_tool = {"id": block.id, "name": block.name}
+                        input_json_buf = ""
+
+                elif event_type == "content_block_delta":
+                    delta = event.delta
+                    if delta.type == "text_delta":
+                        text_content += delta.text
+                        yield StreamDelta(type="text_delta", text=delta.text)
+                    elif delta.type == "thinking_delta":
+                        thinking_content += delta.thinking
+                        yield StreamDelta(type="thinking_delta", text=delta.thinking)
+                    elif delta.type == "input_json_delta":
+                        input_json_buf += delta.partial_json
+
+                elif event_type == "content_block_stop":
+                    if current_tool is not None:
+                        import json as _json
+                        arguments = _json.loads(input_json_buf) if input_json_buf else {}
+                        tool_calls.append(
+                            ToolCall(
+                                id=current_tool["id"],
+                                type="function",
+                                function=FunctionCall(
+                                    name=current_tool["name"],
+                                    arguments=arguments,
+                                ),
+                            )
+                        )
+                        current_tool = None
+                        input_json_buf = ""
+
+            # After stream completes, get the final message for usage info
+            final_message = await stream.get_final_message()
+
+        usage = None
+        if hasattr(final_message, "usage") and final_message.usage:
+            input_tokens = final_message.usage.input_tokens or 0
+            output_tokens = final_message.usage.output_tokens or 0
+            cache_read = getattr(final_message.usage, "cache_read_input_tokens", 0) or 0
+            cache_create = getattr(final_message.usage, "cache_creation_input_tokens", 0) or 0
+            total_input = input_tokens + cache_read + cache_create
+            usage = TokenUsage(
+                prompt_tokens=total_input,
+                completion_tokens=output_tokens,
+                total_tokens=total_input + output_tokens,
+            )
+
+        yield StreamDelta(
+            type="message_complete",
+            response=LLMResponse(
+                content=text_content,
+                thinking=thinking_content if thinking_content else None,
+                tool_calls=tool_calls if tool_calls else None,
+                finish_reason=final_message.stop_reason or "stop",
+                usage=usage,
+            ),
+        )

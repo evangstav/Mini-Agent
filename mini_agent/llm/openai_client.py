@@ -2,12 +2,13 @@
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 from openai import AsyncOpenAI
 
 from ..retry import RetryConfig, async_retry
-from ..schema import FunctionCall, LLMResponse, Message, TokenUsage, ToolCall
+from ..schema import FunctionCall, LLMResponse, Message, StreamDelta, TokenUsage, ToolCall
 from .base import LLMClientBase
 
 logger = logging.getLogger(__name__)
@@ -293,3 +294,109 @@ class OpenAIClient(LLMClientBase):
 
         # Parse and return response
         return self._parse_response(response)
+
+    async def generate_stream(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+    ) -> AsyncIterator[StreamDelta]:
+        """Stream response from OpenAI LLM, yielding deltas as tokens arrive.
+
+        Uses stream=True for real-time token delivery. Token usage arrives
+        in the final chunk and is included in the message_complete event.
+        """
+        request_params = self._prepare_request(messages, tools)
+
+        params: dict[str, Any] = {
+            "model": self.model,
+            "messages": request_params["api_messages"],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "extra_body": {"reasoning_split": True},
+        }
+        if request_params["tools"]:
+            params["tools"] = self._convert_tools(request_params["tools"])
+
+        text_content = ""
+        thinking_content = ""
+        tool_calls_map: dict[int, dict[str, Any]] = {}  # index -> {id, name, arguments_buf}
+        finish_reason = "stop"
+        usage = None
+
+        stream = await self.client.chat.completions.create(**params)
+        async for chunk in stream:
+            if not chunk.choices and hasattr(chunk, "usage") and chunk.usage:
+                # Final usage-only chunk
+                usage = TokenUsage(
+                    prompt_tokens=chunk.usage.prompt_tokens or 0,
+                    completion_tokens=chunk.usage.completion_tokens or 0,
+                    total_tokens=chunk.usage.total_tokens or 0,
+                )
+                continue
+
+            if not chunk.choices:
+                continue
+
+            choice = chunk.choices[0]
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+
+            delta = choice.delta
+            if delta is None:
+                continue
+
+            # Text content delta
+            if delta.content:
+                text_content += delta.content
+                yield StreamDelta(type="text_delta", text=delta.content)
+
+            # Reasoning/thinking delta
+            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                thinking_content += delta.reasoning_content
+                yield StreamDelta(type="thinking_delta", text=delta.reasoning_content)
+
+            # Tool call deltas
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_calls_map:
+                        tool_calls_map[idx] = {
+                            "id": tc_delta.id or "",
+                            "name": tc_delta.function.name if tc_delta.function and tc_delta.function.name else "",
+                            "arguments_buf": "",
+                        }
+                    entry = tool_calls_map[idx]
+                    if tc_delta.id:
+                        entry["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            entry["name"] = tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            entry["arguments_buf"] += tc_delta.function.arguments
+
+        # Build tool calls list
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(tool_calls_map):
+            entry = tool_calls_map[idx]
+            arguments = json.loads(entry["arguments_buf"]) if entry["arguments_buf"] else {}
+            tool_calls.append(
+                ToolCall(
+                    id=entry["id"],
+                    type="function",
+                    function=FunctionCall(
+                        name=entry["name"],
+                        arguments=arguments,
+                    ),
+                )
+            )
+
+        yield StreamDelta(
+            type="message_complete",
+            response=LLMResponse(
+                content=text_content,
+                thinking=thinking_content if thinking_content else None,
+                tool_calls=tool_calls if tool_calls else None,
+                finish_reason=finish_reason,
+                usage=usage,
+            ),
+        )
