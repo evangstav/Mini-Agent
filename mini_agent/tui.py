@@ -199,9 +199,10 @@ async def run_tui(
     perm_mgr = PermissionManager()
     perm_cb = perm_mgr.check if enable_permissions else None
 
-    default_prompt = (
-        system_prompt
-        or Path(__file__).parent.joinpath("config", "system_prompt.md").read_text(encoding="utf-8")
+    default_prompt = system_prompt or (
+        "You are a helpful coding assistant. You have access to tools for "
+        "reading/writing files, running shell commands, and more. "
+        "Work step by step and verify your changes."
     )
 
     tool_result_store = ToolResultStore(
