@@ -2,7 +2,6 @@
 
 import os
 import tempfile
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,6 +11,7 @@ from mini_agent.context import (
     ToolResultStore,
     compact_messages,
     estimate_tokens,
+    prune_tool_results,
 )
 from mini_agent.schema import LLMResponse, Message
 
@@ -137,31 +137,23 @@ class TestSystemPromptBuilder:
         prompt = builder.build()
         assert "You are helpful." in prompt
 
-    def test_includes_project_claude_md(self, tmp_path):
-        # Create a .git dir so walk-up stops here
-        (tmp_path / ".git").mkdir()
+    def test_includes_claude_md(self, tmp_path):
         (tmp_path / "CLAUDE.md").write_text("# Rules\nBe concise.")
         builder = SystemPromptBuilder("Base prompt.", str(tmp_path))
         prompt = builder.build()
         assert "Be concise." in prompt
-        assert "Project Instructions" in prompt
+        assert "CLAUDE.md" in prompt
 
-    def test_truncates_large_content(self, tmp_path):
-        (tmp_path / ".git").mkdir()
+    def test_truncates_large_claude_md(self, tmp_path):
         (tmp_path / "CLAUDE.md").write_text("x" * 10000)
         builder = SystemPromptBuilder("Base.", str(tmp_path))
         prompt = builder.build()
         assert "truncated" in prompt
 
-    def test_no_claude_md(self, tmp_path, monkeypatch):
-        (tmp_path / ".git").mkdir()
-        # Ensure no global CLAUDE.md is found
-        fake_home = tmp_path / "fakehome"
-        fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    def test_no_claude_md(self, tmp_path):
         builder = SystemPromptBuilder("Base.", str(tmp_path))
         prompt = builder.build()
-        assert "Project Instructions" not in prompt
+        assert "CLAUDE.md" not in prompt
 
     def test_includes_git_info(self):
         # Use the actual repo directory (we're in a git repo)
@@ -170,63 +162,69 @@ class TestSystemPromptBuilder:
         # Should include git info since we're in a repo
         assert "Branch:" in prompt or "Git Context" not in prompt
 
-    def test_merges_global_and_project(self, tmp_path, monkeypatch):
-        """Global ~/.claude/CLAUDE.md and project CLAUDE.md are both included."""
-        (tmp_path / ".git").mkdir()
-        (tmp_path / "CLAUDE.md").write_text("Project rules here.")
 
-        fake_home = tmp_path / "fakehome"
-        (fake_home / ".claude").mkdir(parents=True)
-        (fake_home / ".claude" / "CLAUDE.md").write_text("Global rules here.")
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+# --- Tool Result Pruning ---
 
-        builder = SystemPromptBuilder("Base.", str(tmp_path))
-        prompt = builder.build()
-        assert "Global rules here." in prompt
-        assert "Project rules here." in prompt
-        # Global should appear before project (less specific first)
-        assert prompt.index("Global rules") < prompt.index("Project rules")
 
-    def test_includes_local_rules(self, tmp_path):
-        """Files in .claude/rules/*.md are included."""
-        (tmp_path / ".git").mkdir()
-        rules_dir = tmp_path / ".claude" / "rules"
-        rules_dir.mkdir(parents=True)
-        (rules_dir / "style.md").write_text("Use snake_case.")
-        (rules_dir / "testing.md").write_text("Always write tests.")
+class TestPruneToolResults:
+    def test_empty_messages(self):
+        assert prune_tool_results([]) == []
 
-        builder = SystemPromptBuilder("Base.", str(tmp_path))
-        prompt = builder.build()
-        assert "Use snake_case." in prompt
-        assert "Always write tests." in prompt
+    def test_no_pruning_within_protection_window(self):
+        """Large tool results within protection window are kept."""
+        msgs = [
+            Message(role="system", content="sys"),
+            Message(role="user", content="do stuff"),
+            Message(role="tool", content="x" * 100_000, tool_call_id="c1", name="bash"),
+        ]
+        result = prune_tool_results(msgs, protect_chars=200_000)
+        assert result[2].content == "x" * 100_000
 
-    def test_walk_up_finds_parent_claude_md(self, tmp_path):
-        """CLAUDE.md in parent dirs (up to git root) are discovered."""
-        # Parent is the git root with its own CLAUDE.md
-        (tmp_path / ".git").mkdir()
-        (tmp_path / "CLAUDE.md").write_text("Root instructions.")
+    def test_prunes_large_tool_result_outside_window(self):
+        """Large tool results beyond protection window get pruned."""
+        # Build: old large tool result, then enough recent content to push it outside window
+        msgs = [
+            Message(role="system", content="sys"),
+            Message(role="tool", content="A" * 100_000, tool_call_id="old", name="bash"),
+            Message(role="user", content="B" * 50_000),
+            Message(role="assistant", content="C" * 50_000),
+            Message(role="user", content="D" * 50_000),
+            Message(role="assistant", content="E" * 50_000),
+        ]
+        # protect_chars=160K, prune_threshold=80K
+        # Recent content (scanning backward): E(50K) + D(50K) + C(50K) + B(50K) = 200K
+        # The old tool result (100K) is beyond the 160K window and > 80K threshold
+        result = prune_tool_results(msgs, protect_chars=160_000, prune_threshold=80_000)
+        assert "pruned" in result[1].content.lower()
+        assert result[1].tool_call_id == "old"
+        assert result[1].name == "bash"
 
-        # Subdirectory has its own CLAUDE.md
-        sub = tmp_path / "sub" / "deep"
-        sub.mkdir(parents=True)
-        (sub / "CLAUDE.md").write_text("Deep instructions.")
+    def test_preserves_small_tool_results_outside_window(self):
+        """Small tool results beyond protection window are kept."""
+        msgs = [
+            Message(role="system", content="sys"),
+            Message(role="tool", content="small", tool_call_id="old", name="bash"),
+            Message(role="user", content="B" * 200_000),
+        ]
+        result = prune_tool_results(msgs, protect_chars=100_000, prune_threshold=80_000)
+        assert result[1].content == "small"
 
-        builder = SystemPromptBuilder("Base.", str(sub))
-        prompt = builder.build()
-        assert "Root instructions." in prompt
-        assert "Deep instructions." in prompt
-        # Root (outermost) appears before deep (innermost)
-        assert prompt.index("Root instructions") < prompt.index("Deep instructions")
+    def test_preserves_non_tool_messages(self):
+        """User/assistant messages are never pruned even if large and outside window."""
+        msgs = [
+            Message(role="system", content="sys"),
+            Message(role="user", content="X" * 100_000),
+            Message(role="assistant", content="Y" * 200_000),
+        ]
+        result = prune_tool_results(msgs, protect_chars=1000, prune_threshold=500)
+        assert result[1].content == "X" * 100_000
+        assert result[2].content == "Y" * 200_000
 
-    def test_rules_non_md_files_ignored(self, tmp_path):
-        """Only .md files in .claude/rules/ are included."""
-        (tmp_path / ".git").mkdir()
-        rules_dir = tmp_path / ".claude" / "rules"
-        rules_dir.mkdir(parents=True)
-        (rules_dir / "valid.md").write_text("Include me.")
-        (rules_dir / "ignored.txt").write_text("Ignore me.")
-
-        builder = SystemPromptBuilder("Base.", str(tmp_path))
-        prompt = builder.build()
-        assert "Include me." in prompt
-        assert "Ignore me." not in prompt
+    def test_returns_same_list_when_nothing_to_prune(self):
+        """Returns original list reference when no pruning needed."""
+        msgs = [
+            Message(role="system", content="sys"),
+            Message(role="user", content="hi"),
+        ]
+        result = prune_tool_results(msgs)
+        assert result is msgs

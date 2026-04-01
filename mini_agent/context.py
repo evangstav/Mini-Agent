@@ -68,6 +68,64 @@ def estimate_tokens(messages: list[Message]) -> int:
     return total_chars // 4
 
 
+# --- Tool Result Pruning ---
+
+def prune_tool_results(
+    messages: list[Message],
+    protect_chars: int = 160_000,
+    prune_threshold: int = 80_000,
+) -> list[Message]:
+    """Remove bloated tool results outside the recent protection window.
+
+    Scans backward from the most recent message. Tool-result messages within the
+    first *protect_chars* characters of cumulative content are kept intact.
+    Beyond that window, any tool-result message whose content exceeds
+    *prune_threshold* characters is replaced with a short placeholder.
+
+    This is cheaper than compaction — no LLM call, just mechanical pruning.
+    Should run before compact_messages().
+
+    Default protect_chars ~160K chars ≈ 40K tokens.
+    Default prune_threshold ~80K chars ≈ 20K tokens.
+    """
+    if not messages:
+        return messages
+
+    # Walk backward, accumulating character counts to find the protection boundary
+    cumulative = 0
+    # Index → True means "outside protection window AND eligible for pruning"
+    prune_indices: set[int] = set()
+
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        msg_chars = len(msg.content) if isinstance(msg.content, str) else len(json.dumps(msg.content))
+
+        if cumulative >= protect_chars:
+            # Outside protection window — check if this is a large tool result
+            if msg.role == "tool" and msg_chars > prune_threshold:
+                prune_indices.add(i)
+
+        cumulative += msg_chars
+
+    if not prune_indices:
+        return messages  # Nothing to prune
+
+    # Build new list, replacing pruned messages
+    result = []
+    for i, msg in enumerate(messages):
+        if i in prune_indices:
+            content = msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
+            result.append(Message(
+                role=msg.role,
+                content=f"[Tool result pruned — was {len(content)} chars. Re-run the tool if needed.]",
+                tool_call_id=msg.tool_call_id,
+                name=msg.name,
+            ))
+        else:
+            result.append(msg)
+    return result
+
+
 # --- Context Compaction ---
 
 async def compact_messages(

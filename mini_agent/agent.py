@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import Optional
 
-from .context import SystemPromptBuilder, ToolResultStore, compact_messages
+from .context import SystemPromptBuilder, ToolResultStore, compact_messages, prune_tool_results
 from .events import (
     AgentDone,
     AgentError,
@@ -71,6 +71,9 @@ class Agent:
             if cancel_event and cancel_event.is_set():
                 yield AgentDone(content="Task cancelled by user.", steps=step)
                 return
+
+            # Prune bloated tool results before compaction (no LLM call)
+            self.messages = prune_tool_results(self.messages)
 
             # Compact context if it's getting large
             if self.compact_threshold > 0:
