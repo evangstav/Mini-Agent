@@ -3,8 +3,8 @@
 from .base import Tool, ToolResult
 from .bash_tool import BashTool
 from .file_tools import EditTool, ReadTool, WriteTool
-from .glob_tool import GlobTool
-from .grep_tool import GrepTool
+from .web_fetch import WebFetchTool
+from .web_search import WebSearchTool
 
 __all__ = [
     "Tool",
@@ -13,6 +13,6 @@ __all__ = [
     "WriteTool",
     "EditTool",
     "BashTool",
-    "GlobTool",
-    "GrepTool",
+    "WebSearchTool",
+    "WebFetchTool",
 ]
