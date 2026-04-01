@@ -615,3 +615,58 @@ async def test_reject_plan_adds_rejection_messages():
     tool_msgs = [m for m in agent.messages if m.role == "tool"]
     assert len(tool_msgs) == 2
     assert all("Plan rejected" in m.content for m in tool_msgs)
+
+
+# --- Fork tests ---
+
+
+@pytest.mark.asyncio
+async def test_fork_creates_independent_copy():
+    """Fork creates a new agent with copied messages that diverge independently."""
+    mock_llm = _make_stream_mock(LLMResponse(content="Hello!", finish_reason="stop"))
+    agent = Agent(llm_client=mock_llm, system_prompt="System.", tools=[MockTool()])
+    agent.add_user_message("First question")
+    agent.messages.append(Message(role="assistant", content="First answer"))
+    agent.add_user_message("Second question")
+    agent.messages.append(Message(role="assistant", content="Second answer"))
+
+    forked = agent.fork()
+
+    # Forked agent has same history
+    assert len(forked.messages) == len(agent.messages)
+    assert forked.messages[0].content == agent.messages[0].content
+
+    # But they are independent copies
+    forked.add_user_message("Forked question")
+    assert len(forked.messages) == len(agent.messages) + 1
+
+
+@pytest.mark.asyncio
+async def test_fork_with_rewind():
+    """Fork with rewind drops the last N turn pairs."""
+    mock_llm = _make_stream_mock(LLMResponse(content="Hello!", finish_reason="stop"))
+    agent = Agent(llm_client=mock_llm, system_prompt="System.", tools=[])
+    # system + 2 user/assistant pairs = 5 messages
+    agent.add_user_message("Q1")
+    agent.messages.append(Message(role="assistant", content="A1"))
+    agent.add_user_message("Q2")
+    agent.messages.append(Message(role="assistant", content="A2"))
+
+    forked = agent.fork(rewind=1)
+
+    # Should have system + Q1 + A1 = 3 messages (dropped Q2+A2)
+    assert len(forked.messages) == 3
+    assert forked.messages[-1].content == "A1"
+
+
+@pytest.mark.asyncio
+async def test_fork_preserves_tools():
+    """Forked agent has the same tools as the original."""
+    mock_llm = _make_stream_mock(LLMResponse(content="Hi", finish_reason="stop"))
+    tool = MockTool()
+    agent = Agent(llm_client=mock_llm, system_prompt="System.", tools=[tool])
+
+    forked = agent.fork()
+
+    assert "mock_tool" in forked.tools
+    assert forked.system_prompt == agent.system_prompt

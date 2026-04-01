@@ -149,6 +149,8 @@ def _format_tokens(n: int) -> str:
 SLASH_COMMANDS = {
     "/help": "Show available commands",
     "/plan": "Propose changes without executing (/plan <instruction>)",
+    "/fork": "Fork conversation (/fork [N] — branch from N turns ago, default 0)",
+    "/forks": "List forks and switch (/forks, /forks <id>)",
     "/clear": "Clear conversation history (keep system prompt)",
     "/compact": "Force context compaction",
     "/model": "Show or change model",
@@ -337,6 +339,11 @@ async def run_tui(
 
     cancel_event = asyncio.Event()
 
+    # ── Fork tracking ────────────────────────────────────────────────────
+    forks: dict[int, Agent] = {0: agent}
+    current_fork_id = 0
+    next_fork_id = 1
+
     # ── REPL loop ─────────────────────────────────────────────────────────
     while True:
         # Build prompt with token count and cost
@@ -455,6 +462,51 @@ async def run_tui(
                     print(f"{_styled('Error loading session:', RED, BOLD)} {e}")
                     continue
                 print(f"{_styled('Session loaded from', GREEN)} {arg}")
+                continue
+
+            if cmd == "/fork":
+                rewind = 0
+                if arg:
+                    try:
+                        rewind = int(arg)
+                    except ValueError:
+                        print(f"{_styled('Usage: /fork [N] — N is number of turns to rewind', RED)}")
+                        continue
+                forked = agent.fork(rewind=rewind)
+                fork_id = next_fork_id
+                next_fork_id += 1
+                forks[fork_id] = forked
+                agent = forked
+                current_fork_id = fork_id
+                turns = len([m for m in agent.messages if m.role in ("user", "assistant")])
+                rewind_label = f", rewound {rewind} turns" if rewind else ""
+                print(f"{_styled('Forked!', GREEN)} Fork #{fork_id} ({turns} turns{rewind_label})")
+                print(f"{_styled('Tip:', DIM)} Use /forks to list and switch forks.")
+                continue
+
+            if cmd == "/forks":
+                if arg:
+                    try:
+                        target_id = int(arg)
+                    except ValueError:
+                        print(f"{_styled('Usage: /forks [id]', RED)}")
+                        continue
+                    if target_id not in forks:
+                        print(f"{_styled('No fork with id:', RED)} {target_id}")
+                        continue
+                    agent = forks[target_id]
+                    current_fork_id = target_id
+                    print(f"{_styled('Switched to fork', GREEN)} #{target_id}")
+                    continue
+                # List all forks
+                print(f"\n{_styled('Conversation Forks', BOLD, CYAN)}")
+                print(f"{_styled('─' * 40, DIM)}")
+                for fid, fagent in forks.items():
+                    turns = len([m for m in fagent.messages if m.role in ("user", "assistant")])
+                    marker = _styled(" ← active", GREEN, BOLD) if fid == current_fork_id else ""
+                    label = "main" if fid == 0 else f"fork"
+                    print(f"  {_styled(f'#{fid}', CYAN)} {label} ({turns} turns){marker}")
+                print()
                 continue
 
             if cmd == "/plan":
