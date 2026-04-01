@@ -1,187 +1,169 @@
 """Test cases for Agent."""
 
 import asyncio
-import tempfile
-from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
-from mini_agent import LLMClient
 from mini_agent.agent import Agent
-from mini_agent.config import Config
-from mini_agent.tools import BashTool, EditTool, ReadTool, WriteTool
+from mini_agent.schema import FunctionCall, LLMResponse, Message, ToolCall
+from mini_agent.tools.base import Tool, ToolResult
+
+
+class MockTool(Tool):
+    """Mock tool for testing."""
+
+    @property
+    def name(self) -> str:
+        return "mock_tool"
+
+    @property
+    def description(self) -> str:
+        return "A mock tool"
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]}
+
+    async def execute(self, **kwargs) -> ToolResult:
+        return ToolResult(success=True, content=f"Mock result for: {kwargs.get('input', '')}")
 
 
 @pytest.mark.asyncio
-async def test_agent_simple_task():
-    """Test agent with a simple file creation task."""
-    print("\n=== Testing Agent with Simple File Task ===")
+async def test_agent_no_tool_calls():
+    """Test agent returns immediately when LLM gives no tool calls."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.return_value = LLMResponse(
+        content="Hello!", finish_reason="stop"
+    )
 
-    # Load config
-    config_path = Path("mini_agent/config/config.yaml")
-    config = Config.from_yaml(config_path)
+    agent = Agent(llm_client=mock_llm, system_prompt="You are helpful.", tools=[])
+    agent.add_user_message("Hi")
+    result = await agent.run()
 
-    # Create temp workspace
-    with tempfile.TemporaryDirectory() as workspace_dir:
-        print(f"Using workspace: {workspace_dir}")
-
-        # Load system prompt (Agent will auto-inject workspace info)
-        system_prompt_path = Path("mini_agent/config/system_prompt.md")
-        if system_prompt_path.exists():
-            system_prompt = system_prompt_path.read_text(encoding="utf-8")
-        else:
-            system_prompt = "You are a helpful AI assistant that can use tools."
-
-        # Initialize LLM client
-        llm_client = LLMClient(
-            api_key=config.llm.api_key,
-            api_base=config.llm.api_base,
-            model=config.llm.model,
-        )
-
-        # Initialize tools
-        tools = [
-            ReadTool(workspace_dir=workspace_dir),
-            WriteTool(workspace_dir=workspace_dir),
-            EditTool(workspace_dir=workspace_dir),
-            BashTool(),
-        ]
-
-        # Create agent
-        agent = Agent(
-            llm_client=llm_client,
-            system_prompt=system_prompt,
-            tools=tools,
-            max_steps=10,  # Limit steps for testing
-            workspace_dir=workspace_dir,
-        )
-
-        # Task: Create a simple text file
-        task = "Create a file named 'test.txt' with the content 'Hello from Agent!'"
-        print(f"\nTask: {task}\n")
-
-        agent.add_user_message(task)
-
-        try:
-            result = await agent.run()
-
-            print(f"\n{'=' * 80}")
-            print(f"Agent Result: {result}")
-            print("=" * 80)
-
-            # Check if file was created
-            test_file = Path(workspace_dir) / "test.txt"
-            if test_file.exists():
-                content = test_file.read_text()
-                print("\n✅ File created successfully!")
-                print(f"Content: {content}")
-
-                if "Hello from Agent!" in content:
-                    print("✅ Content is correct!")
-                    return True
-                else:
-                    print(f"⚠️  Content mismatch: {content}")
-                    return True  # Still count as success, agent did create the file
-            else:
-                print("⚠️  File was not created, but agent completed")
-                return True  # Agent might have completed differently
-
-        except Exception as e:
-            print(f"❌ Agent test failed: {e}")
-            import traceback
-
-            traceback.print_exc()
-            return False
+    assert result == "Hello!"
+    assert mock_llm.generate.call_count == 1
 
 
 @pytest.mark.asyncio
-async def test_agent_bash_task():
-    """Test agent with a bash command task."""
-    print("\n=== Testing Agent with Bash Task ===")
+async def test_agent_with_tool_call():
+    """Test agent handles tool calls correctly."""
+    mock_llm = AsyncMock()
 
-    # Load config
-    config_path = Path("mini_agent/config/config.yaml")
-    config = Config.from_yaml(config_path)
+    # First call: LLM wants to use a tool
+    mock_llm.generate.side_effect = [
+        LLMResponse(
+            content="Let me use the tool.",
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    type="function",
+                    function=FunctionCall(name="mock_tool", arguments={"input": "test"}),
+                )
+            ],
+            finish_reason="tool_use",
+        ),
+        # Second call: LLM gives final answer
+        LLMResponse(content="Done! The result was mock.", finish_reason="stop"),
+    ]
 
-    # Create temp workspace
-    with tempfile.TemporaryDirectory() as workspace_dir:
-        print(f"Using workspace: {workspace_dir}")
+    tool = MockTool()
+    agent = Agent(llm_client=mock_llm, system_prompt="You are helpful.", tools=[tool])
+    agent.add_user_message("Use the mock tool")
+    result = await agent.run()
 
-        # Load system prompt (Agent will auto-inject workspace info)
-        system_prompt_path = Path("mini_agent/config/system_prompt.md")
-        if system_prompt_path.exists():
-            system_prompt = system_prompt_path.read_text(encoding="utf-8")
-        else:
-            system_prompt = "You are a helpful AI assistant that can use tools."
-
-        # Initialize LLM client
-        llm_client = LLMClient(
-            api_key=config.llm.api_key,
-            api_base=config.llm.api_base,
-            model=config.llm.model,
-        )
-
-        # Initialize tools
-        tools = [
-            ReadTool(workspace_dir=workspace_dir),
-            WriteTool(workspace_dir=workspace_dir),
-            BashTool(),
-        ]
-
-        # Create agent
-        agent = Agent(
-            llm_client=llm_client,
-            system_prompt=system_prompt,
-            tools=tools,
-            max_steps=10,
-            workspace_dir=workspace_dir,
-        )
-
-        # Task: List files using bash
-        task = "Use bash to list all files in the current directory and tell me what you find."
-        print(f"\nTask: {task}\n")
-
-        agent.add_user_message(task)
-
-        try:
-            result = await agent.run()
-
-            print(f"\n{'=' * 80}")
-            print(f"Agent Result: {result}")
-            print("=" * 80)
-
-            print("\n✅ Bash task completed!")
-            return True
-
-        except Exception as e:
-            print(f"❌ Bash task failed: {e}")
-            import traceback
-
-            traceback.print_exc()
-            return False
+    assert result == "Done! The result was mock."
+    assert mock_llm.generate.call_count == 2
 
 
-async def main():
-    """Run all agent tests."""
-    print("=" * 80)
-    print("Running Agent Integration Tests")
-    print("=" * 80)
-    print("\nNote: These tests require a valid MiniMax API key in config.yaml")
-    print("These tests will actually call the LLM API and may take some time.\n")
+@pytest.mark.asyncio
+async def test_agent_unknown_tool():
+    """Test agent handles unknown tool gracefully."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.side_effect = [
+        LLMResponse(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    type="function",
+                    function=FunctionCall(name="nonexistent_tool", arguments={}),
+                )
+            ],
+            finish_reason="tool_use",
+        ),
+        LLMResponse(content="Tool not found.", finish_reason="stop"),
+    ]
 
-    # Test simple file task
-    result1 = await test_agent_simple_task()
+    agent = Agent(llm_client=mock_llm, system_prompt="You are helpful.", tools=[])
+    agent.add_user_message("Do something")
+    result = await agent.run()
 
-    # Test bash task
-    result2 = await test_agent_bash_task()
-
-    print("\n" + "=" * 80)
-    if result1 and result2:
-        print("All Agent tests passed! ✅")
-    else:
-        print("Some Agent tests failed. Check the output above.")
-    print("=" * 80)
+    assert result == "Tool not found."
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+@pytest.mark.asyncio
+async def test_agent_cancellation():
+    """Test agent respects cancel event."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.return_value = LLMResponse(
+        content="This should not be the result",
+        tool_calls=[
+            ToolCall(
+                id="call_1",
+                type="function",
+                function=FunctionCall(name="mock_tool", arguments={"input": "test"}),
+            )
+        ],
+        finish_reason="tool_use",
+    )
+
+    cancel_event = asyncio.Event()
+    cancel_event.set()  # Cancel immediately
+
+    agent = Agent(llm_client=mock_llm, system_prompt="You are helpful.", tools=[MockTool()])
+    agent.add_user_message("Do something")
+    result = await agent.run(cancel_event=cancel_event)
+
+    assert "cancelled" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_agent_max_steps():
+    """Test agent stops at max steps."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.return_value = LLMResponse(
+        content="Still working...",
+        tool_calls=[
+            ToolCall(
+                id="call_1",
+                type="function",
+                function=FunctionCall(name="mock_tool", arguments={"input": "loop"}),
+            )
+        ],
+        finish_reason="tool_use",
+    )
+
+    agent = Agent(llm_client=mock_llm, system_prompt="You are helpful.", tools=[MockTool()], max_steps=3)
+    agent.add_user_message("Loop forever")
+    result = await agent.run()
+
+    assert "couldn't be completed" in result.lower()
+    assert mock_llm.generate.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_get_history():
+    """Test get_history returns message copy."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.return_value = LLMResponse(content="Hi!", finish_reason="stop")
+
+    agent = Agent(llm_client=mock_llm, system_prompt="System", tools=[])
+    agent.add_user_message("Hello")
+    await agent.run()
+
+    history = agent.get_history()
+    assert len(history) == 3  # system + user + assistant
+    assert history[0].role == "system"
+    assert history[1].role == "user"
+    assert history[2].role == "assistant"
