@@ -38,6 +38,7 @@ from .events import (
 )
 from .llm import LLMClient
 from .schema import LLMProvider, Message
+from .tools.agent_tool import AgentTool
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
 from .tools.git_tool import GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
@@ -248,6 +249,15 @@ async def run_tui(
     mcp_config = str(Path(workspace) / "mcp.json")
     mcp_tools = await load_mcp_tools_async(mcp_config)
     tools.extend(mcp_tools)
+
+    # Add AgentTool — shares llm_client for prompt cache, can use all other tools
+    all_tools_by_name = {t.name: t for t in tools}
+    agent_tool = AgentTool(
+        llm_client=llm_client,
+        available_tools=all_tools_by_name,
+        max_steps=max_steps,
+    )
+    tools.append(agent_tool)
 
     perm_mgr = PermissionManager()
     perm_cb = perm_mgr.check if enable_permissions else None
