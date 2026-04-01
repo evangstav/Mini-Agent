@@ -1,6 +1,7 @@
 """Mini Agent - Minimal single agent with basic tools and MCP support."""
 
 from .agent import Agent
+from .config import MiniAgentConfig, load_config
 from .context import SystemPromptBuilder, ToolResultStore, compact_messages, estimate_tokens, extract_handoff_context, prune_tool_results
 from .events import (
     AgentCancelled,
@@ -24,6 +25,8 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Agent",
+    "MiniAgentConfig",
+    "load_config",
     "AgentCancelled",
     "AgentDone",
     "AgentError",

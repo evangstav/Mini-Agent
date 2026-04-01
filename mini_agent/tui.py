@@ -22,6 +22,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
 from .agent import Agent
+from .config import MiniAgentConfig, load_config
 from .context import ToolResultStore, estimate_tokens
 from .cost import calculate_cost, format_cost
 from .dream import DreamConsolidator
@@ -222,7 +223,18 @@ async def run_tui(
     """Launch the interactive TUI REPL."""
     setup_logging(verbose=verbose)
 
-    # ── Resolve config ────────────────────────────────────────────────────
+    # ── Resolve config (file hierarchy + CLI overrides) ──────────────────
+    workspace = workspace or os.getcwd()
+
+    cli_overrides = MiniAgentConfig(
+        model=model,
+        provider=provider if provider != "anthropic" else None,  # only override if non-default
+        api_base=api_base,
+        max_steps=max_steps if max_steps != 50 else None,  # only override if non-default
+        permissions=False if not enable_permissions else None,
+    )
+    cfg = load_config(project_dir=workspace, cli_overrides=cli_overrides)
+
     # Auto-detect provider from available API keys
     minimax_key = os.environ.get("MINIMAX_API_KEY", "")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -234,14 +246,16 @@ async def run_tui(
 
     # Default to MiniMax if MINIMAX_API_KEY is set, otherwise Anthropic
     is_minimax = bool(minimax_key) and api_key == minimax_key
+    provider = cfg.provider or provider
     provider_enum = LLMProvider(provider)
-    model = model or os.environ.get("MINI_AGENT_MODEL") or (
+    model = cfg.model or os.environ.get("MINI_AGENT_MODEL") or (
         "MiniMax-M2.7" if is_minimax else "claude-sonnet-4-20250514"
     )
-    api_base = api_base or os.environ.get("MINI_AGENT_API_BASE") or (
+    api_base = cfg.api_base or os.environ.get("MINI_AGENT_API_BASE") or (
         "https://api.minimax.io" if is_minimax else "https://api.anthropic.com"
     )
-    workspace = workspace or os.getcwd()
+    max_steps = cfg.max_steps or max_steps
+    enable_permissions = cfg.permissions if cfg.permissions is not None else enable_permissions
 
     llm_client = LLMClient(
         api_key=api_key,
