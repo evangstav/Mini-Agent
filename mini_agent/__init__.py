@@ -2,19 +2,18 @@
 
 from .agent import Agent
 from .context import SystemPromptBuilder, ToolResultStore, compact_messages, estimate_tokens, prune_tool_results
+from .dream import DreamConsolidator, DreamResult
 from .events import (
     AgentDone,
     AgentError,
     AgentEvent,
     PermissionRequest,
-    SubAgentDone,
-    SubAgentError,
-    SubAgentSpawn,
     TextChunk,
     ThinkingChunk,
     ToolEnd,
     ToolStart,
 )
+from .hooks import HookEvent, HookRegistry, SessionEndPayload, SessionStartPayload
 from .llm import LLMClient
 from .schema import FunctionCall, LLMProvider, LLMResponse, Message, ToolCall
 
@@ -25,14 +24,17 @@ __all__ = [
     "AgentDone",
     "AgentError",
     "AgentEvent",
+    "DreamConsolidator",
+    "DreamResult",
+    "HookEvent",
+    "HookRegistry",
     "LLMClient",
     "LLMProvider",
     "Message",
     "LLMResponse",
     "PermissionRequest",
-    "SubAgentDone",
-    "SubAgentError",
-    "SubAgentSpawn",
+    "SessionEndPayload",
+    "SessionStartPayload",
     "TextChunk",
     "ThinkingChunk",
     "ToolCall",
