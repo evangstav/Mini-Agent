@@ -14,6 +14,7 @@ from .events import (
     AgentError,
     AgentEvent,
     PermissionRequest,
+    PlanProposal,
     TextChunk,
     ThinkingChunk,
     ToolEnd,
@@ -87,13 +88,22 @@ class Agent:
         self.messages.append(Message(role="user", content=content))
 
     async def run_stream(
-        self, cancel_event: Optional[asyncio.Event] = None
+        self,
+        cancel_event: Optional[asyncio.Event] = None,
+        plan_mode: bool = False,
     ) -> AsyncGenerator[AgentEvent, None]:
         """Execute agent loop, yielding events as they occur.
 
+        Args:
+            cancel_event: Set to cancel execution.
+            plan_mode: If True, yield PlanProposal instead of executing tools.
+                The assistant message (with tool_calls) is added to history
+                so execute_plan()/reject_plan() can pick up where we left off.
+
         Yields:
             AgentEvent subclasses: TextChunk, ThinkingChunk, ToolStart,
-            ToolEnd, PermissionRequest, AgentDone, AgentCancelled, AgentError.
+            ToolEnd, PermissionRequest, PlanProposal, AgentDone,
+            AgentCancelled, AgentError.
         """
         if self._running:
             raise RuntimeError("run_stream() is already running; concurrent calls are not supported")
@@ -190,6 +200,20 @@ class Agent:
                     done_event = AgentDone(content=response.content, steps=step + 1)
                     await self._emit_session_end(done_event)
                     yield done_event
+                    return
+
+                # Plan mode: yield proposal instead of executing tools
+                if plan_mode and response.tool_calls:
+                    proposed = [
+                        {
+                            "id": tc.id,
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        }
+                        for tc in response.tool_calls
+                    ]
+                    yield PlanProposal(proposed_calls=proposed, steps=step + 1)
+                    self._running = False
                     return
 
                 # Act: execute tool calls in parallel, Observe: collect results
@@ -342,6 +366,95 @@ class Agent:
             elif isinstance(event, AgentError):
                 return event.error
         return ""
+
+    async def execute_plan(
+        self, cancel_event: Optional[asyncio.Event] = None
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """Execute tool calls from a plan proposal and continue the agent loop.
+
+        Call after run_stream(plan_mode=True) yielded a PlanProposal.
+        The last message in history should be the assistant message with tool_calls.
+        """
+        # Find the pending tool calls from the last assistant message
+        last_msg = self.messages[-1] if self.messages else None
+        if not last_msg or last_msg.role != "assistant" or not last_msg.tool_calls:
+            yield AgentError(error="No pending plan to execute.", steps=0)
+            return
+
+        # Execute the pending tools, then continue with normal run_stream
+        async for event in self._execute_tool_calls(last_msg.tool_calls):
+            yield event
+
+        # Continue the normal agent loop for remaining steps
+        async for event in self.run_stream(cancel_event=cancel_event):
+            yield event
+
+    async def reject_plan(self) -> None:
+        """Reject a pending plan by adding denial results for all tool calls.
+
+        The agent can then be given new instructions via add_user_message().
+        """
+        last_msg = self.messages[-1] if self.messages else None
+        if not last_msg or last_msg.role != "assistant" or not last_msg.tool_calls:
+            return
+
+        for tc in last_msg.tool_calls:
+            self.messages.append(
+                Message(
+                    role="tool",
+                    content="Error: Plan rejected by user.",
+                    tool_call_id=tc.id,
+                    name=tc.function.name,
+                )
+            )
+
+    async def _execute_tool_calls(
+        self, tool_calls: list
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """Execute a list of tool calls and append results to history."""
+        tool_tasks: list[tuple[str, str, dict]] = []
+
+        for tc in tool_calls:
+            tc_id = tc.id
+            fn_name = tc.function.name
+            args = tc.function.arguments
+
+            decision = self.sandbox.check(fn_name, args)
+
+            if decision == Decision.DENY:
+                error_msg = f"Tool blocked by sandbox ({self.sandbox.mode.value} mode): {fn_name}"
+                yield ToolEnd(tool_call_id=tc_id, tool_name=fn_name, success=False, content="", error=error_msg)
+                self.messages.append(Message(role="tool", content=f"Error: {error_msg}", tool_call_id=tc_id, name=fn_name))
+                continue
+
+            if decision == Decision.ASK and self._permission_callback is not None:
+                yield PermissionRequest(tool_call_id=tc_id, tool_name=fn_name, arguments=args)
+                granted = await self._permission_callback(fn_name, args)
+                if not granted:
+                    error_msg = f"Permission denied for tool: {fn_name}"
+                    yield ToolEnd(tool_call_id=tc_id, tool_name=fn_name, success=False, content="", error=error_msg)
+                    self.messages.append(Message(role="tool", content=f"Error: {error_msg}", tool_call_id=tc_id, name=fn_name))
+                    continue
+
+            yield ToolStart(tool_call_id=tc_id, tool_name=fn_name, arguments=args)
+            tool_tasks.append((tc_id, fn_name, args))
+
+        async def _exec(tc_id: str, fn_name: str, args: dict) -> tuple[str, str, ToolResult]:
+            if fn_name not in self.tools:
+                return tc_id, fn_name, ToolResult(success=False, content="", error=f"Unknown tool: {fn_name}")
+            try:
+                return tc_id, fn_name, await self.tools[fn_name].execute(**args)
+            except Exception as e:
+                return tc_id, fn_name, ToolResult(success=False, content="", error=f"Tool execution failed: {e}")
+
+        if tool_tasks:
+            results = await asyncio.gather(*(_exec(tc_id, fn, args) for tc_id, fn, args in tool_tasks))
+            for tc_id, fn_name, result in results:
+                content = result.content if result.success else f"Error: {result.error}"
+                if self.tool_result_store and result.success:
+                    content = self.tool_result_store.store_if_large(content, tc_id)
+                yield ToolEnd(tool_call_id=tc_id, tool_name=fn_name, success=result.success, content=content if result.success else "", error=result.error)
+                self.messages.append(Message(role="tool", content=content, tool_call_id=tc_id, name=fn_name))
 
     async def _emit_session_end(self, event: AgentDone | AgentCancelled | AgentError) -> None:
         """Emit SESSION_END hook with the conversation history."""
