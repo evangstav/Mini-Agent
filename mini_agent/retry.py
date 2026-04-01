@@ -68,6 +68,13 @@ class RetryExhaustedError(Exception):
         self.last_exception = last_exception
         self.attempts = attempts
         super().__init__(f"Retry failed after {attempts} attempts. Last error: {str(last_exception)}")
+        # Preserve original exception chain
+        self.__cause__ = last_exception
+
+    @property
+    def original_error(self) -> Exception:
+        """Access the original exception."""
+        return self.last_exception
 
 
 def async_retry(

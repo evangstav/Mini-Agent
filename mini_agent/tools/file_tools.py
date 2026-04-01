@@ -1,5 +1,7 @@
 """File operation tools."""
 
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -131,7 +133,17 @@ class EditTool(Tool):
             if old_str not in content:
                 return ToolResult(success=False, error=f"Text not found in file: {old_str}")
 
-            file_path.write_text(content.replace(old_str, new_str), encoding="utf-8")
+            # Atomic write: write to temp file in same directory, then rename
+            dir_path = file_path.parent
+            fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content.replace(old_str, new_str))
+                Path(tmp_path).replace(file_path)  # Atomic on POSIX
+            except Exception:
+                Path(tmp_path).unlink(missing_ok=True)
+                raise
+
             return ToolResult(success=True, content=f"Successfully edited {file_path}")
         except Exception as e:
             return ToolResult(success=False, error=str(e))

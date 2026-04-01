@@ -2,17 +2,32 @@
 
 import asyncio
 import platform
+import re
 from typing import Any
 
 from .base import Tool, ToolResult
 
 
-class BashTool(Tool):
-    """Execute shell commands."""
+# Dangerous commands that could harm the system
+DANGEROUS_PATTERNS = [
+    r"\brm\s+-rf\s+/",  # Recursive delete from root
+    r"\bdd\b.*of=",     # Direct disk write
+    r"\bmkfs\b",        # Format filesystem
+    r"\bfdisk\b",       # Partition tool
+    r"\b shred\b",      # Secure delete
+    r">\s*/dev/sd",     # Writing to disk device
+    r"\bcurl\b.*\|\s*sh",  # Pipe to shell (common infection vector)
+    r"\bwget\b.*\|\s*sh",  # Same for wget
+]
 
-    def __init__(self, workspace_dir: str | None = None):
+
+class BashTool(Tool):
+    """Execute shell commands with basic safety filtering."""
+
+    def __init__(self, workspace_dir: str | None = None, allow_dangerous: bool = False):
         self.is_windows = platform.system() == "Windows"
         self.workspace_dir = workspace_dir
+        self.allow_dangerous = allow_dangerous
 
     @property
     def name(self) -> str:
@@ -40,8 +55,26 @@ class BashTool(Tool):
             "required": ["command"],
         }
 
+    def _is_command_safe(self, command: str) -> tuple[bool, str]:
+        """Check if command is safe to execute. Returns (safe, reason)."""
+        if self.allow_dangerous:
+            return True, ""
+
+        for pattern in DANGEROUS_PATTERNS:
+            if re.search(pattern, command, re.IGNORECASE):
+                return False, f"Command matches blocked pattern: {pattern}"
+        return True, ""
+
     async def execute(self, command: str, timeout: int = 120) -> ToolResult:
-        """Execute a shell command."""
+        """Execute a shell command with safety checks."""
+        # Security check
+        is_safe, reason = self._is_command_safe(command)
+        if not is_safe:
+            return ToolResult(
+                success=False,
+                error=f"Command blocked for safety: {reason}. Set allow_dangerous=True to bypass."
+            )
+
         timeout = max(1, min(timeout, 600))
 
         try:

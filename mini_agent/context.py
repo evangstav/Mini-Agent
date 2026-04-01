@@ -50,6 +50,17 @@ class ToolResultStore:
             return result_path.read_text(encoding="utf-8")
         return None
 
+    def cleanup(self, max_age_hours: int = 24) -> int:
+        """Remove stored results older than max_age_hours. Returns count of deleted files."""
+        import time
+        cutoff = time.time() - (max_age_hours * 3600)
+        deleted = 0
+        for path in self.storage_dir.glob("*.txt"):
+            if path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+                deleted += 1
+        return deleted
+
 
 # --- Token Estimation ---
 
