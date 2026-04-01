@@ -33,7 +33,7 @@ from .events import (
 )
 from .llm import LLMClient
 from .schema import LLMProvider, Message
-from .tools.bash_tool import BashTool
+from .tools.bash_tool import BashKillTool, BashOutputTool, BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
 
 # ── ANSI helpers ──────────────────────────────────────────────────────────────
@@ -205,6 +205,8 @@ async def run_tui(
         WriteTool(workspace_dir=workspace),
         EditTool(workspace_dir=workspace),
         BashTool(workspace_dir=workspace),
+        BashOutputTool(),
+        BashKillTool(),
     ]
 
     perm_mgr = PermissionManager()
