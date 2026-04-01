@@ -275,7 +275,7 @@ async def run_tui(
 
         try:
             user_input = await session.prompt_async(
-                "> ",
+                prompt_text,
                 multiline=False,
                 key_bindings=kb,
             )
@@ -413,6 +413,9 @@ async def run_tui(
         except KeyboardInterrupt:
             cancel_event.set()
             print(f"\n{_styled('Cancelled.', YELLOW)}")
+
+    # Session truly ending — emit SESSION_END for dream consolidation
+    await agent.end_session()
 
 
 # ── CLI entry point ───────────────────────────────────────────────────────────

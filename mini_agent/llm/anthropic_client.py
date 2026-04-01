@@ -144,7 +144,7 @@ class AnthropicClient(LLMClientBase):
                     # Add thinking block if present
                     if msg.thinking:
                         content_blocks.append(
-                            {"type": "thinking", "thinking": msg.thinking}
+                            {"type": "thinking", "text": msg.thinking}
                         )
 
                     # Add text content if present

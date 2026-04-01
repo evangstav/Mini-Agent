@@ -36,6 +36,7 @@ from .llm import LLMClient
 from .schema import LLMProvider, Message
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
+from .tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_async
 from .tools.web_fetch import WebFetchTool
 from .tools.web_search import WebSearchTool
 
@@ -228,6 +229,11 @@ async def run_tui(
         WebSearchTool(),
         WebFetchTool(),
     ]
+
+    # Load MCP tools from config
+    mcp_config = str(Path(workspace) / "mcp.json")
+    mcp_tools = await load_mcp_tools_async(mcp_config)
+    tools.extend(mcp_tools)
 
     perm_mgr = PermissionManager()
     perm_cb = perm_mgr.check if enable_permissions else None
@@ -446,6 +452,10 @@ async def run_tui(
         except KeyboardInterrupt:
             cancel_event.set()
             print(f"\n{_styled('Cancelled.', YELLOW)}")
+
+    # Session truly ending — emit SESSION_END for dream consolidation
+    await agent.end_session()
+    await cleanup_mcp_connections()
 
 
 # ── CLI entry point ───────────────────────────────────────────────────────────

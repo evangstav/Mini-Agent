@@ -74,6 +74,7 @@ class Agent:
         self.hooks = hooks or HookRegistry()
         self.session_id = session_id
         self._running = False
+        self._session_started = False
 
     def add_user_message(self, content: str):
         """Add a user message to history."""
@@ -93,20 +94,20 @@ class Agent:
         self._running = True
 
         try:
-            # Emit session start hook
-            await self.hooks.emit(
-                HookEvent.SESSION_START,
-                SessionStartPayload(
-                    session_id=self.session_id,
-                    system_prompt=self.system_prompt,
-                ),
-            )
+            # Emit session start hook only once per session (not per turn)
+            if not self._session_started:
+                self._session_started = True
+                await self.hooks.emit(
+                    HookEvent.SESSION_START,
+                    SessionStartPayload(
+                        session_id=self.session_id,
+                        system_prompt=self.system_prompt,
+                    ),
+                )
 
             for step in range(self.max_steps):
                 if cancel_event and cancel_event.is_set():
-                    cancel_event_obj = AgentCancelled(content="Task cancelled by user.", steps=step)
-                    await self._emit_session_end(cancel_event_obj)
-                    yield cancel_event_obj
+                    yield AgentCancelled(content="Task cancelled by user.", steps=step)
                     return
 
                 # Compact context if it's getting large
@@ -145,16 +146,12 @@ class Agent:
                             response = delta.response
 
                     if response is None:
-                        error_event = AgentError(
+                        yield AgentError(
                             error="LLM stream ended without message_complete", steps=step
                         )
-                        await self._emit_session_end(error_event)
-                        yield error_event
                         return
                 except Exception as e:
-                    error_event = AgentError(error=f"LLM call failed: {e}", steps=step)
-                    await self._emit_session_end(error_event)
-                    yield error_event
+                    yield AgentError(error=f"LLM call failed: {e}", steps=step)
                     return
 
                 # Record assistant message
@@ -168,14 +165,10 @@ class Agent:
 
                 # No tool calls → task complete
                 if not response.tool_calls:
-                    done_event = AgentDone(content=response.content, steps=step + 1)
-                    await self._emit_session_end(done_event)
-                    yield done_event
+                    yield AgentDone(content=response.content, steps=step + 1)
                     return
 
                 # Act: execute tool calls in parallel, Observe: collect results
-                # Separate permission-gated calls (must be serial) from executable ones
-                pending_events: list[AgentEvent] = []
                 tool_tasks: list[tuple[str, str, dict]] = []  # (id, name, args)
                 permission_denied: dict[str, ToolResult] = {}
 
@@ -267,17 +260,13 @@ class Agent:
                         )
 
                 if cancel_event and cancel_event.is_set():
-                    cancel_event_obj = AgentCancelled(content="Task cancelled by user.", steps=step + 1)
-                    await self._emit_session_end(cancel_event_obj)
-                    yield cancel_event_obj
+                    yield AgentCancelled(content="Task cancelled by user.", steps=step + 1)
                     return
 
-            error_event = AgentError(
+            yield AgentError(
                 error=f"Task couldn't be completed after {self.max_steps} steps.",
                 steps=self.max_steps,
             )
-            await self._emit_session_end(error_event)
-            yield error_event
         finally:
             self._running = False
 
@@ -296,24 +285,20 @@ class Agent:
                 return event.error
         return ""
 
-    async def _emit_session_end(self, event: AgentDone | AgentCancelled | AgentError) -> None:
-        """Emit SESSION_END hook with the conversation history."""
-        if isinstance(event, AgentCancelled):
-            event_type = "agent_cancelled"
-        elif isinstance(event, AgentDone):
-            event_type = "agent_done"
-        else:
-            event_type = "agent_error"
-
+    async def end_session(self) -> None:
+        """Emit SESSION_END hook. Call once when the session truly ends (e.g. REPL exit)."""
+        if not self._session_started:
+            return
         await self.hooks.emit(
             HookEvent.SESSION_END,
             SessionEndPayload(
                 session_id=self.session_id,
                 messages=self.messages.copy(),
-                final_event_type=event_type,
-                steps=event.steps,
+                final_event_type="session_end",
+                steps=0,
             ),
         )
+        self._session_started = False
 
     def get_history(self) -> list[Message]:
         """Get message history."""

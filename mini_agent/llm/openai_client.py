@@ -39,6 +39,7 @@ class OpenAIClient(LLMClientBase):
             retry_config: Optional retry configuration
         """
         super().__init__(api_key, api_base, model, retry_config)
+        self._is_minimax = "minimax" in (api_base or "").lower()
 
         # Initialize OpenAI client
         self.client = AsyncOpenAI(
@@ -66,9 +67,10 @@ class OpenAIClient(LLMClientBase):
         params = {
             "model": self.model,
             "messages": api_messages,
-            # Enable reasoning_split to separate thinking content
-            "extra_body": {"reasoning_split": True},
         }
+        # reasoning_split is MiniMax-specific; breaks real OpenAI
+        if self._is_minimax:
+            params["extra_body"] = {"reasoning_split": True}
 
         if tools:
             params["tools"] = self._convert_tools(tools)
@@ -158,12 +160,9 @@ class OpenAIClient(LLMClientBase):
                         )
                     assistant_msg["tool_calls"] = tool_calls_list
 
-                # IMPORTANT: Add reasoning_details if thinking is present
-                # This is CRITICAL for Interleaved Thinking to work properly!
-                # The complete response_message (including reasoning_details) must be
-                # preserved in Message History and passed back to the model in the next turn.
-                # This ensures the model's chain of thought is not interrupted.
-                if msg.thinking:
+                # reasoning_details is MiniMax-specific for Interleaved Thinking.
+                # Sending it to real OpenAI would cause errors.
+                if msg.thinking and self._is_minimax:
                     assistant_msg["reasoning_details"] = [{"text": msg.thinking}]
 
                 api_messages.append(assistant_msg)
@@ -312,8 +311,9 @@ class OpenAIClient(LLMClientBase):
             "messages": request_params["api_messages"],
             "stream": True,
             "stream_options": {"include_usage": True},
-            "extra_body": {"reasoning_split": True},
         }
+        if self._is_minimax:
+            params["extra_body"] = {"reasoning_split": True}
         if request_params["tools"]:
             params["tools"] = self._convert_tools(request_params["tools"])
 
