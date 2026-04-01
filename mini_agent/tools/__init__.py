@@ -3,6 +3,7 @@
 from .base import Tool, ToolResult
 from .bash_tool import BashTool
 from .file_tools import EditTool, ReadTool, WriteTool
+from .git_tool import GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
 from .web_fetch import WebFetchTool
 from .web_search import WebSearchTool
 
@@ -13,6 +14,11 @@ __all__ = [
     "WriteTool",
     "EditTool",
     "BashTool",
+    "GitStatusTool",
+    "GitDiffTool",
+    "GitCommitTool",
+    "GitLogTool",
+    "GitBranchTool",
     "WebSearchTool",
     "WebFetchTool",
 ]

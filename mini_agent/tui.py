@@ -36,6 +36,7 @@ from .llm import LLMClient
 from .schema import LLMProvider, Message
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
+from .tools.git_tool import GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
 from .tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_async
 from .tools.web_fetch import WebFetchTool
 from .tools.web_search import WebSearchTool
@@ -226,6 +227,11 @@ async def run_tui(
         WriteTool(workspace_dir=workspace),
         EditTool(workspace_dir=workspace),
         BashTool(workspace_dir=workspace),
+        GitStatusTool(workspace_dir=workspace),
+        GitDiffTool(workspace_dir=workspace),
+        GitCommitTool(workspace_dir=workspace),
+        GitLogTool(workspace_dir=workspace),
+        GitBranchTool(workspace_dir=workspace),
         WebSearchTool(),
         WebFetchTool(),
     ]

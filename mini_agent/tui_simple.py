@@ -35,6 +35,7 @@ from .llm import LLMClient
 from .schema import LLMProvider, Message
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
+from .tools.git_tool import GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
 
 # ── ANSI helpers ──────────────────────────────────────────────────────────────
 
@@ -205,6 +206,11 @@ async def run_tui(
         WriteTool(workspace_dir=workspace),
         EditTool(workspace_dir=workspace),
         BashTool(workspace_dir=workspace),
+        GitStatusTool(workspace_dir=workspace),
+        GitDiffTool(workspace_dir=workspace),
+        GitCommitTool(workspace_dir=workspace),
+        GitLogTool(workspace_dir=workspace),
+        GitBranchTool(workspace_dir=workspace),
     ]
 
     perm_mgr = PermissionManager()
