@@ -94,7 +94,8 @@ async def test_compact_summarizes_old_turns():
     """When over threshold, old turns are summarized."""
     mock_llm = AsyncMock()
     mock_llm.generate.return_value = LLMResponse(
-        content="Summary of prior work.", finish_reason="stop"
+        content="## Completed Work\n- Fixed bug\n## Current File State\n- main.py modified",
+        finish_reason="stop",
     )
 
     # Build messages that exceed a low threshold
@@ -109,6 +110,33 @@ async def test_compact_summarizes_old_turns():
     assert result[0].role == "system"
     assert "Context summary" in result[1].content
     assert len(result) == 6  # system + summary + 4 recent
+
+
+@pytest.mark.asyncio
+async def test_compact_uses_structured_template():
+    """Compaction prompt includes structured sections."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.return_value = LLMResponse(
+        content="## Completed Work\n- Done stuff", finish_reason="stop"
+    )
+
+    msgs = [Message(role="system", content="sys")]
+    for i in range(20):
+        msgs.append(Message(role="user", content=f"question {i} " * 50))
+        msgs.append(Message(role="assistant", content=f"answer {i} " * 50))
+
+    await compact_messages(msgs, mock_llm, token_threshold=100, keep_recent=4)
+
+    # Verify the prompt sent to LLM contains structured sections
+    call_args = mock_llm.generate.call_args
+    prompt_messages = call_args.kwargs.get("messages") or call_args[1].get("messages") or call_args[0][0]
+    user_prompt = prompt_messages[1].content
+
+    assert "## Completed Work" in user_prompt
+    assert "## Current File State" in user_prompt
+    assert "## Active Tasks" in user_prompt
+    assert "## Next Steps" in user_prompt
+    assert "## Key Decisions & Constraints" in user_prompt
 
 
 @pytest.mark.asyncio

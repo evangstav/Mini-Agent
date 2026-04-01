@@ -95,22 +95,40 @@ async def compact_messages(
     old_turns = conversation[:-keep_recent]
     recent_turns = conversation[-keep_recent:]
 
-    # Build summary prompt
+    # Build structured summary prompt
     old_text_parts = []
     for msg in old_turns:
         content = msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
         old_text_parts.append(f"[{msg.role}]: {content[:500]}")
 
+    conversation_block = "\n".join(old_text_parts)
+
     summary_prompt = (
-        "Summarize the following conversation turns into a concise paragraph. "
-        "Preserve key facts, decisions, tool results, and any errors encountered. "
-        "Be brief but complete.\n\n" + "\n".join(old_text_parts)
+        "Summarize the following conversation into a structured compaction summary. "
+        "Use EXACTLY these sections (omit a section only if there is genuinely "
+        "nothing for it):\n\n"
+        "## Completed Work\n"
+        "What was accomplished: files created/modified, bugs fixed, features added, "
+        "commands run and their outcomes.\n\n"
+        "## Current File State\n"
+        "Which files were touched and their current status (created, modified, deleted). "
+        "Include key structural decisions (e.g. 'moved X from module A to B').\n\n"
+        "## Active Tasks\n"
+        "Work still in progress or pending. Include any failing tests or unresolved errors.\n\n"
+        "## Next Steps\n"
+        "What should happen next, in priority order.\n\n"
+        "## Key Decisions & Constraints\n"
+        "Important decisions made and why, user preferences or constraints that must "
+        "be preserved, and any discovered blockers.\n\n"
+        "Be concise but preserve all actionable information. "
+        "Prefer bullet points over prose.\n\n"
+        "---\n\n" + conversation_block
     )
 
     try:
         summary_response = await llm_client.generate(
             messages=[
-                Message(role="system", content="You are a conversation summarizer."),
+                Message(role="system", content="You produce structured compaction summaries of coding agent conversations. Be precise and preserve actionable detail."),
                 Message(role="user", content=summary_prompt),
             ]
         )
