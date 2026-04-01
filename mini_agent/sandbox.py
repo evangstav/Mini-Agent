@@ -18,6 +18,8 @@ from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
 
+from .permissions import PermissionRuleset, RuleAction
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +37,15 @@ class Decision(str, Enum):
     ALLOW = "allow"
     DENY = "deny"
     ASK = "ask"
+
+
+# ── Rule action → Decision mapping ────────────────────────────────────────────
+
+_RULE_ACTION_TO_DECISION: dict[RuleAction, Decision] = {
+    RuleAction.ALLOW: Decision.ALLOW,
+    RuleAction.DENY: Decision.DENY,
+    RuleAction.ASK: Decision.ASK,
+}
 
 
 # ── Safe command classification (whitelist for auto mode) ────────────────────
@@ -209,20 +220,32 @@ class Sandbox:
         self,
         mode: PermissionMode = PermissionMode.AUTO,
         allowed_domains: frozenset[str] | None = None,
+        permission_rules: PermissionRuleset | None = None,
     ):
         self.mode = mode
         self.allowed_domains = (
             allowed_domains if allowed_domains is not None else DEFAULT_ALLOWED_DOMAINS
         )
+        self.permission_rules = permission_rules
 
     def check(self, tool_name: str, arguments: dict[str, Any]) -> Decision:
         """Decide whether a tool call should be allowed, denied, or gated.
+
+        Permission rules (if configured) are evaluated first. If a rule matches,
+        its action overrides the mode-based default. If no rule matches, the
+        standard mode logic applies.
 
         Returns:
             Decision.ALLOW  — execute without prompting
             Decision.DENY   — block the call entirely
             Decision.ASK    — prompt the user for approval
         """
+        # Evaluate permission rules first (if any)
+        if self.permission_rules is not None:
+            rule_action = self.permission_rules.evaluate(tool_name, arguments)
+            if rule_action is not None:
+                return _RULE_ACTION_TO_DECISION[rule_action]
+
         if self.mode == PermissionMode.FULL_ACCESS:
             logger.debug("Full access: allowing %s", tool_name)
             return Decision.ALLOW

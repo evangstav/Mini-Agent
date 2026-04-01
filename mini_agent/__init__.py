@@ -15,6 +15,7 @@ from .events import (
 )
 from .llm import LLMClient
 from .log import setup_logging
+from .permissions import PermissionRule, PermissionRuleset, RuleAction, load_rules, load_rules_from_toml
 from .sandbox import Decision, PermissionMode, Sandbox
 from .schema import FunctionCall, LLMProvider, LLMResponse, Message, ToolCall
 
@@ -30,8 +31,13 @@ __all__ = [
     "LLMProvider",
     "Message",
     "PermissionMode",
+    "PermissionRule",
+    "PermissionRuleset",
+    "RuleAction",
     "Sandbox",
     "Decision",
+    "load_rules",
+    "load_rules_from_toml",
     "LLMResponse",
     "PermissionRequest",
     "TextChunk",
