@@ -6,11 +6,14 @@ permission prompts, slash commands, and session save/load.
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
@@ -37,6 +40,7 @@ from .schema import LLMProvider, Message
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
 from .tools.git_tool import GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
+from .log import setup_logging
 from .tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_async
 from .tools.web_fetch import WebFetchTool
 from .tools.web_search import WebSearchTool
@@ -192,8 +196,10 @@ async def run_tui(
     max_steps: int = 50,
     session_file: str | None = None,
     enable_permissions: bool = True,
+    verbose: bool = False,
 ) -> None:
     """Launch the interactive TUI REPL."""
+    setup_logging(verbose=verbose)
 
     # ── Resolve config ────────────────────────────────────────────────────
     # Auto-detect provider from available API keys
@@ -201,6 +207,7 @@ async def run_tui(
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     api_key = api_key or minimax_key or anthropic_key or ""
     if not api_key:
+        logger.error("No API key configured")
         print(f"{_styled('Error:', RED, BOLD)} Set MINIMAX_API_KEY or ANTHROPIC_API_KEY environment variable.")
         sys.exit(1)
 
@@ -289,6 +296,8 @@ async def run_tui(
     @kb.add(Keys.Escape, Keys.Enter)
     def _submit(event):
         event.current_buffer.validate_and_handle()
+
+    logger.info("TUI started: model=%s provider=%s workspace=%s", model, provider, workspace)
 
     # ── Banner ────────────────────────────────────────────────────────────
     print(f"\n{_styled('Mini-Agent', BOLD, CYAN)} {_styled('v0.1.0', DIM)}")
@@ -485,6 +494,8 @@ def main() -> None:
     parser.add_argument("--session", help="Session file to load/resume")
     parser.add_argument("--no-permissions", action="store_true",
                         help="Disable permission prompts (auto-allow all tools)")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Enable debug logging to stderr")
     args = parser.parse_args()
 
     asyncio.run(run_tui(
@@ -497,4 +508,5 @@ def main() -> None:
         max_steps=args.max_steps,
         session_file=args.session,
         enable_permissions=not args.no_permissions,
+        verbose=args.verbose,
     ))
