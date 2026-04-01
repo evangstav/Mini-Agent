@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import Optional
 
-from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold
+from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold, prune_tool_results
 from .events import (
     AgentDone,
     AgentError,
@@ -98,6 +98,9 @@ class Agent:
                 await self._emit_session_end(done_event)
                 yield done_event
                 return
+
+            # Prune bloated tool results before compaction (no LLM call)
+            self.messages = prune_tool_results(self.messages)
 
             # Compact context if it's getting large
             if self.compact_threshold > 0:

@@ -6,6 +6,21 @@ from typing import Any
 from .base import Tool, ToolResult
 
 
+def _validate_path(file_path: Path, workspace_dir: Path) -> str | None:
+    """Validate that resolved path is inside workspace_dir.
+
+    Returns an error string if the path escapes the workspace, None if safe.
+    """
+    try:
+        resolved = file_path.resolve()
+        workspace_resolved = workspace_dir.resolve()
+        # Ensure the resolved path starts with the workspace directory
+        resolved.relative_to(workspace_resolved)
+        return None
+    except ValueError:
+        return f"Path escapes workspace: {file_path} resolves outside {workspace_dir}"
+
+
 class ReadTool(Tool):
     """Read file content."""
 
@@ -37,6 +52,9 @@ class ReadTool(Tool):
             file_path = Path(path)
             if not file_path.is_absolute():
                 file_path = self.workspace_dir / file_path
+
+            if error := _validate_path(file_path, self.workspace_dir):
+                return ToolResult(success=False, error=error)
 
             if not file_path.exists():
                 return ToolResult(success=False, error=f"File not found: {path}")
@@ -85,6 +103,10 @@ class WriteTool(Tool):
             file_path = Path(path)
             if not file_path.is_absolute():
                 file_path = self.workspace_dir / file_path
+
+            if error := _validate_path(file_path, self.workspace_dir):
+                return ToolResult(success=False, error=error)
+
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
             return ToolResult(success=True, content=f"Successfully wrote to {file_path}")
@@ -124,6 +146,9 @@ class EditTool(Tool):
             if not file_path.is_absolute():
                 file_path = self.workspace_dir / file_path
 
+            if error := _validate_path(file_path, self.workspace_dir):
+                return ToolResult(success=False, error=error)
+
             if not file_path.exists():
                 return ToolResult(success=False, error=f"File not found: {path}")
 
@@ -131,7 +156,15 @@ class EditTool(Tool):
             if old_str not in content:
                 return ToolResult(success=False, error=f"Text not found in file: {old_str}")
 
-            file_path.write_text(content.replace(old_str, new_str), encoding="utf-8")
+            match_count = content.count(old_str)
+            if match_count > 1:
+                return ToolResult(
+                    success=False,
+                    error=f"old_str matches {match_count} times in {path} — must be unique. "
+                          f"Provide more surrounding context to disambiguate.",
+                )
+
+            file_path.write_text(content.replace(old_str, new_str, 1), encoding="utf-8")
             return ToolResult(success=True, content=f"Successfully edited {file_path}")
         except Exception as e:
             return ToolResult(success=False, error=str(e))

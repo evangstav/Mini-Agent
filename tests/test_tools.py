@@ -20,7 +20,7 @@ async def test_read_tool():
         temp_path = f.name
 
     try:
-        tool = ReadTool()
+        tool = ReadTool(workspace_dir=str(Path(temp_path).parent))
         result = await tool.execute(path=temp_path)
 
         assert result.success, f"Read failed: {result.error}"
@@ -40,7 +40,7 @@ async def test_write_tool():
     with tempfile.TemporaryDirectory() as tmpdir:
         file_path = Path(tmpdir) / "test.txt"
 
-        tool = WriteTool()
+        tool = WriteTool(workspace_dir=tmpdir)
         result = await tool.execute(path=str(file_path), content="Test content")
 
         assert result.success, f"Write failed: {result.error}"
@@ -59,7 +59,7 @@ async def test_edit_tool():
         temp_path = f.name
 
     try:
-        tool = EditTool()
+        tool = EditTool(workspace_dir=str(Path(temp_path).parent))
         result = await tool.execute(
             path=temp_path, old_str="World", new_str="Agent"
         )

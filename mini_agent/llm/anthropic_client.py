@@ -27,6 +27,7 @@ class AnthropicClient(LLMClientBase):
         api_base: str = "https://api.minimaxi.com/anthropic",
         model: str = "MiniMax-M2.7",
         retry_config: RetryConfig | None = None,
+        max_tokens: int = 16384,
     ):
         """Initialize Anthropic client.
 
@@ -35,8 +36,10 @@ class AnthropicClient(LLMClientBase):
             api_base: Base URL for the API (default: MiniMax Anthropic endpoint)
             model: Model name to use (default: MiniMax-M2.5)
             retry_config: Optional retry configuration
+            max_tokens: Maximum tokens in response (default: 16384)
         """
         super().__init__(api_key, api_base, model, retry_config)
+        self.max_tokens = max_tokens
 
         # Initialize Anthropic async client
         self.client = anthropic.AsyncAnthropic(
@@ -66,7 +69,7 @@ class AnthropicClient(LLMClientBase):
         """
         params = {
             "model": self.model,
-            "max_tokens": 16384,
+            "max_tokens": self.max_tokens,
             "messages": api_messages,
         }
 
