@@ -15,6 +15,7 @@ from .events import (
     ToolEnd,
     ToolStart,
 )
+from .hooks import HookEvent, HookRegistry, SessionEndPayload, SessionStartPayload
 from .llm import LLMClient
 from .schema import Message
 from .tools.base import Tool, ToolResult
@@ -41,6 +42,8 @@ class Agent:
         compaction_reserve: int = 20_000,
         project_dir: str | None = None,
         permission_callback: object = None,
+        hooks: HookRegistry | None = None,
+        session_id: str | None = None,
     ):
         self.llm = llm_client
         self.tools = {tool.name: tool for tool in tools}
@@ -64,6 +67,8 @@ class Agent:
         self.system_prompt = system_prompt
         self.messages: list[Message] = [Message(role="system", content=system_prompt)]
         self._permission_callback = permission_callback
+        self.hooks = hooks or HookRegistry()
+        self.session_id = session_id
 
     def add_user_message(self, content: str):
         """Add a user message to history."""
@@ -78,9 +83,20 @@ class Agent:
             AgentEvent subclasses: TextChunk, ThinkingChunk, ToolStart,
             ToolEnd, PermissionRequest, AgentDone, AgentError.
         """
+        # Emit session start hook
+        await self.hooks.emit(
+            HookEvent.SESSION_START,
+            SessionStartPayload(
+                session_id=self.session_id,
+                system_prompt=self.system_prompt,
+            ),
+        )
+
         for step in range(self.max_steps):
             if cancel_event and cancel_event.is_set():
-                yield AgentDone(content="Task cancelled by user.", steps=step)
+                done_event = AgentDone(content="Task cancelled by user.", steps=step)
+                await self._emit_session_end(done_event)
+                yield done_event
                 return
 
             # Compact context if it's getting large
@@ -95,7 +111,9 @@ class Agent:
                     messages=self.messages, tools=list(self.tools.values())
                 )
             except Exception as e:
-                yield AgentError(error=f"LLM call failed: {e}", steps=step)
+                error_event = AgentError(error=f"LLM call failed: {e}", steps=step)
+                await self._emit_session_end(error_event)
+                yield error_event
                 return
 
             # Emit thinking if present
@@ -117,7 +135,9 @@ class Agent:
 
             # No tool calls → task complete
             if not response.tool_calls:
-                yield AgentDone(content=response.content, steps=step + 1)
+                done_event = AgentDone(content=response.content, steps=step + 1)
+                await self._emit_session_end(done_event)
+                yield done_event
                 return
 
             # Act: execute tool calls, Observe: collect results
@@ -200,13 +220,17 @@ class Agent:
                 )
 
                 if cancel_event and cancel_event.is_set():
-                    yield AgentDone(content="Task cancelled by user.", steps=step + 1)
+                    done_event = AgentDone(content="Task cancelled by user.", steps=step + 1)
+                    await self._emit_session_end(done_event)
+                    yield done_event
                     return
 
-        yield AgentError(
+        error_event = AgentError(
             error=f"Task couldn't be completed after {self.max_steps} steps.",
             steps=self.max_steps,
         )
+        await self._emit_session_end(error_event)
+        yield error_event
 
     async def run(self, cancel_event: Optional[asyncio.Event] = None) -> str:
         """Execute agent loop until task is complete or max steps reached.
@@ -220,6 +244,25 @@ class Agent:
             elif isinstance(event, AgentError):
                 return event.error
         return ""
+
+    async def _emit_session_end(self, event: AgentDone | AgentError) -> None:
+        """Emit SESSION_END hook with the conversation history."""
+        if isinstance(event, AgentDone):
+            event_type = "agent_done"
+            steps = event.steps
+        else:
+            event_type = "agent_error"
+            steps = event.steps
+
+        await self.hooks.emit(
+            HookEvent.SESSION_END,
+            SessionEndPayload(
+                session_id=self.session_id,
+                messages=self.messages.copy(),
+                final_event_type=event_type,
+                steps=steps,
+            ),
+        )
 
     def get_history(self) -> list[Message]:
         """Get message history."""
