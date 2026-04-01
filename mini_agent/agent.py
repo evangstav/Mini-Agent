@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import Optional
 
-from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold, prune_tool_results
+from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold
 from .events import (
     AgentDone,
     AgentError,
@@ -69,6 +69,7 @@ class Agent:
         self._permission_callback = permission_callback
         self.hooks = hooks or HookRegistry()
         self.session_id = session_id
+        self._running = False
 
     def add_user_message(self, content: str):
         """Add a user message to history."""
@@ -83,144 +84,160 @@ class Agent:
             AgentEvent subclasses: TextChunk, ThinkingChunk, ToolStart,
             ToolEnd, PermissionRequest, AgentDone, AgentError.
         """
-        # Emit session start hook
-        await self.hooks.emit(
-            HookEvent.SESSION_START,
-            SessionStartPayload(
-                session_id=self.session_id,
-                system_prompt=self.system_prompt,
-            ),
-        )
+        if self._running:
+            raise RuntimeError("run_stream() is already running; concurrent calls are not supported")
+        self._running = True
 
-        for step in range(self.max_steps):
-            if cancel_event and cancel_event.is_set():
-                done_event = AgentDone(content="Task cancelled by user.", steps=step)
-                await self._emit_session_end(done_event)
-                yield done_event
-                return
-
-            # Prune bloated tool results before compaction (no LLM call)
-            self.messages = prune_tool_results(self.messages)
-
-            # Compact context if it's getting large
-            if self.compact_threshold > 0:
-                self.messages = await compact_messages(
-                    self.messages, self.llm, self.compact_threshold
-                )
-
-            # Think: call LLM
-            try:
-                response = await self.llm.generate(
-                    messages=self.messages, tools=list(self.tools.values())
-                )
-            except Exception as e:
-                error_event = AgentError(error=f"LLM call failed: {e}", steps=step)
-                await self._emit_session_end(error_event)
-                yield error_event
-                return
-
-            # Emit thinking if present
-            if response.thinking:
-                yield ThinkingChunk(content=response.thinking)
-
-            # Emit text content if present
-            if response.content:
-                yield TextChunk(content=response.content)
-
-            # Record assistant message
-            assistant_msg = Message(
-                role="assistant",
-                content=response.content,
-                thinking=response.thinking,
-                tool_calls=response.tool_calls,
+        try:
+            # Emit session start hook
+            await self.hooks.emit(
+                HookEvent.SESSION_START,
+                SessionStartPayload(
+                    session_id=self.session_id,
+                    system_prompt=self.system_prompt,
+                ),
             )
-            self.messages.append(assistant_msg)
 
-            # No tool calls → task complete
-            if not response.tool_calls:
-                done_event = AgentDone(content=response.content, steps=step + 1)
-                await self._emit_session_end(done_event)
-                yield done_event
-                return
+            for step in range(self.max_steps):
+                if cancel_event and cancel_event.is_set():
+                    done_event = AgentDone(content="Task cancelled by user.", steps=step)
+                    await self._emit_session_end(done_event)
+                    yield done_event
+                    return
 
-            # Act: execute tool calls, Observe: collect results
-            for tool_call in response.tool_calls:
-                tool_call_id = tool_call.id
-                function_name = tool_call.function.name
-                arguments = tool_call.function.arguments
+                # Compact context if it's getting large
+                if self.compact_threshold > 0:
+                    self.messages = await compact_messages(
+                        self.messages, self.llm, self.compact_threshold
+                    )
 
-                # Permission gating
-                if self._permission_callback is not None:
-                    yield PermissionRequest(
+                # Think: call LLM
+                try:
+                    response = await self.llm.generate(
+                        messages=self.messages, tools=list(self.tools.values())
+                    )
+                except Exception as e:
+                    error_event = AgentError(error=f"LLM call failed: {e}", steps=step)
+                    await self._emit_session_end(error_event)
+                    yield error_event
+                    return
+
+                # Emit thinking if present
+                if response.thinking:
+                    yield ThinkingChunk(content=response.thinking)
+
+                # Emit text content if present
+                if response.content:
+                    yield TextChunk(content=response.content)
+
+                # Record assistant message
+                assistant_msg = Message(
+                    role="assistant",
+                    content=response.content,
+                    thinking=response.thinking,
+                    tool_calls=response.tool_calls,
+                )
+                self.messages.append(assistant_msg)
+
+                # No tool calls → task complete
+                if not response.tool_calls:
+                    done_event = AgentDone(content=response.content, steps=step + 1)
+                    await self._emit_session_end(done_event)
+                    yield done_event
+                    return
+
+                # Act: execute tool calls in parallel, Observe: collect results
+                # Separate permission-gated calls (must be serial) from executable ones
+                pending_events: list[AgentEvent] = []
+                tool_tasks: list[tuple[str, str, dict]] = []  # (id, name, args)
+                permission_denied: dict[str, ToolResult] = {}
+
+                for tool_call in response.tool_calls:
+                    tool_call_id = tool_call.id
+                    function_name = tool_call.function.name
+                    arguments = tool_call.function.arguments
+
+                    # Permission gating (serial — requires user interaction)
+                    if self._permission_callback is not None:
+                        yield PermissionRequest(
+                            tool_call_id=tool_call_id,
+                            tool_name=function_name,
+                            arguments=arguments,
+                        )
+                        granted = await self._permission_callback(
+                            function_name, arguments
+                        )
+                        if not granted:
+                            denied_result = ToolResult(
+                                success=False,
+                                content="",
+                                error=f"Permission denied for tool: {function_name}",
+                            )
+                            permission_denied[tool_call_id] = denied_result
+                            yield ToolEnd(
+                                tool_call_id=tool_call_id,
+                                tool_name=function_name,
+                                success=False,
+                                content="",
+                                error=denied_result.error,
+                            )
+                            self.messages.append(
+                                Message(
+                                    role="tool",
+                                    content=f"Error: {denied_result.error}",
+                                    tool_call_id=tool_call_id,
+                                    name=function_name,
+                                )
+                            )
+                            continue
+
+                    yield ToolStart(
                         tool_call_id=tool_call_id,
                         tool_name=function_name,
                         arguments=arguments,
                     )
-                    granted = await self._permission_callback(
-                        function_name, arguments
-                    )
-                    if not granted:
-                        result = ToolResult(
-                            success=False,
-                            content="",
-                            error=f"Permission denied for tool: {function_name}",
+                    tool_tasks.append((tool_call_id, function_name, arguments))
+
+                # Execute permitted tool calls in parallel
+                async def _execute_tool(tc_id: str, fn_name: str, args: dict) -> tuple[str, str, ToolResult]:
+                    if fn_name not in self.tools:
+                        return tc_id, fn_name, ToolResult(
+                            success=False, content="", error=f"Unknown tool: {fn_name}"
                         )
+                    try:
+                        return tc_id, fn_name, await self.tools[fn_name].execute(**args)
+                    except Exception as e:
+                        return tc_id, fn_name, ToolResult(
+                            success=False, content="", error=f"Tool execution failed: {e}"
+                        )
+
+                if tool_tasks:
+                    results = await asyncio.gather(
+                        *(_execute_tool(tc_id, fn, args) for tc_id, fn, args in tool_tasks)
+                    )
+
+                    for tool_call_id, function_name, result in results:
+                        # Store large results to disk if configured
+                        content = result.content if result.success else f"Error: {result.error}"
+                        if self.tool_result_store and result.success:
+                            content = self.tool_result_store.store_if_large(content, tool_call_id)
+
                         yield ToolEnd(
                             tool_call_id=tool_call_id,
                             tool_name=function_name,
-                            success=False,
-                            content="",
+                            success=result.success,
+                            content=content if result.success else "",
                             error=result.error,
                         )
+
                         self.messages.append(
                             Message(
                                 role="tool",
-                                content=f"Error: {result.error}",
+                                content=content,
                                 tool_call_id=tool_call_id,
                                 name=function_name,
                             )
                         )
-                        continue
-
-                yield ToolStart(
-                    tool_call_id=tool_call_id,
-                    tool_name=function_name,
-                    arguments=arguments,
-                )
-
-                if function_name not in self.tools:
-                    result = ToolResult(
-                        success=False, content="", error=f"Unknown tool: {function_name}"
-                    )
-                else:
-                    try:
-                        result = await self.tools[function_name].execute(**arguments)
-                    except Exception as e:
-                        result = ToolResult(
-                            success=False, content="", error=f"Tool execution failed: {e}"
-                        )
-
-                # Store large results to disk if configured
-                content = result.content if result.success else f"Error: {result.error}"
-                if self.tool_result_store and result.success:
-                    content = self.tool_result_store.store_if_large(content, tool_call_id)
-
-                yield ToolEnd(
-                    tool_call_id=tool_call_id,
-                    tool_name=function_name,
-                    success=result.success,
-                    content=result.content if result.success else "",
-                    error=result.error,
-                )
-
-                self.messages.append(
-                    Message(
-                        role="tool",
-                        content=content,
-                        tool_call_id=tool_call_id,
-                        name=function_name,
-                    )
-                )
 
                 if cancel_event and cancel_event.is_set():
                     done_event = AgentDone(content="Task cancelled by user.", steps=step + 1)
@@ -228,12 +245,14 @@ class Agent:
                     yield done_event
                     return
 
-        error_event = AgentError(
-            error=f"Task couldn't be completed after {self.max_steps} steps.",
-            steps=self.max_steps,
-        )
-        await self._emit_session_end(error_event)
-        yield error_event
+            error_event = AgentError(
+                error=f"Task couldn't be completed after {self.max_steps} steps.",
+                steps=self.max_steps,
+            )
+            await self._emit_session_end(error_event)
+            yield error_event
+        finally:
+            self._running = False
 
     async def run(self, cancel_event: Optional[asyncio.Event] = None) -> str:
         """Execute agent loop until task is complete or max steps reached.

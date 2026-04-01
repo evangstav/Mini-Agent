@@ -20,6 +20,8 @@ from prompt_toolkit.keys import Keys
 
 from .agent import Agent
 from .context import ToolResultStore, estimate_tokens
+from .dream import DreamConsolidator
+from .hooks import HookRegistry
 from .events import (
     AgentDone,
     AgentError,
@@ -33,7 +35,6 @@ from .llm import LLMClient
 from .schema import LLMProvider, Message
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
-from .tools.mcp_loader import cleanup_mcp_connections
 
 # ── ANSI helpers ──────────────────────────────────────────────────────────────
 
@@ -219,6 +220,14 @@ async def run_tui(
         storage_dir=str(Path(workspace) / ".runtime" / "tool_results")
     )
 
+    # Set up hooks with dream consolidator for persistent memory
+    hooks = HookRegistry()
+    dream = DreamConsolidator(
+        memory_dir=str(Path(workspace) / ".claude" / "memory"),
+        llm_client=llm_client,
+    )
+    dream.register(hooks)
+
     agent = Agent(
         llm_client=llm_client,
         system_prompt=default_prompt,
@@ -227,6 +236,7 @@ async def run_tui(
         tool_result_store=tool_result_store,
         project_dir=workspace,
         permission_callback=perm_cb,
+        hooks=hooks,
     )
 
     # Load existing session if requested
@@ -272,8 +282,12 @@ async def run_tui(
         except KeyboardInterrupt:
             continue
         except EOFError:
-            print(f"\n{_styled('Goodbye!', DIM)}")
-            await cleanup_mcp_connections()
+            # Auto-save session before exit
+            auto_save_path = str(Path(workspace) / ".runtime" / "autosave_session.json")
+            if len(agent.messages) > 1:  # More than just the system prompt
+                save_session(agent.messages, auto_save_path)
+                print(f"\n{_styled('Session auto-saved to', DIM)} {auto_save_path}")
+            print(f"{_styled('Goodbye!', DIM)}")
             break
 
         user_input = user_input.strip()
@@ -292,7 +306,6 @@ async def run_tui(
 
             if cmd == "/exit" or cmd == "/quit":
                 print(f"{_styled('Goodbye!', DIM)}")
-                await cleanup_mcp_connections()
                 break
 
             if cmd == "/clear":
@@ -303,10 +316,6 @@ async def run_tui(
 
             if cmd == "/compact":
                 before = estimate_tokens(agent.messages)
-                agent.messages = await agent.llm.generate(
-                    messages=agent.messages, tools=None
-                ) if False else agent.messages  # placeholder
-                # Force compaction by lowering threshold temporarily
                 from .context import compact_messages
                 agent.messages = await compact_messages(
                     agent.messages, agent.llm, token_threshold=0

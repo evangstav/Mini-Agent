@@ -20,6 +20,51 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+class TransientError(Exception):
+    """Base class for transient errors that should be retried (429, 5xx, timeouts)."""
+    pass
+
+
+class RateLimitError(TransientError):
+    """Rate limit (429) error."""
+    pass
+
+
+class ServerError(TransientError):
+    """Server-side (5xx) error."""
+    pass
+
+
+def is_retryable(exc: Exception) -> bool:
+    """Check if an exception is retryable (429, 5xx, timeout).
+
+    Returns True for rate limits, server errors, timeouts, and connection errors.
+    Returns False for auth errors (401/403), bad requests (400), and other client errors.
+    """
+    if isinstance(exc, TransientError):
+        return True
+
+    # Check for timeout errors
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)):
+        return True
+
+    # Check HTTP status codes from common API libraries
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status is not None:
+        return status == 429 or status >= 500
+
+    # Check anthropic-specific exceptions
+    exc_name = type(exc).__name__
+    if exc_name in ("RateLimitError", "InternalServerError", "APITimeoutError",
+                     "APIConnectionError", "OverloadedError"):
+        return True
+    if exc_name in ("AuthenticationError", "PermissionDeniedError", "BadRequestError",
+                     "NotFoundError"):
+        return False
+
+    return False
+
+
 class RetryConfig:
     """Retry configuration class"""
 
@@ -112,6 +157,10 @@ def async_retry(
                     return await func(*args, **kwargs)
 
                 except config.retryable_exceptions as e:
+                    # Only retry transient errors (429, 5xx, timeouts)
+                    if not is_retryable(e):
+                        raise
+
                     last_exception = e
 
                     # If this is the last attempt, don't retry

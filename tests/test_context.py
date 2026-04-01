@@ -62,9 +62,9 @@ class TestEstimateTokens:
         assert estimate_tokens([]) == 0
 
     def test_simple_messages(self):
-        msgs = [Message(role="user", content="hello world")]  # 11 chars -> ~2 tokens
+        msgs = [Message(role="user", content="hello world")]  # 11 chars -> ~3 tokens
         tokens = estimate_tokens(msgs)
-        assert tokens == 2  # 11 // 4
+        assert tokens == 3  # 11 // 3
 
     def test_includes_thinking(self):
         msgs = [
