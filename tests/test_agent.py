@@ -1,7 +1,7 @@
 """Test cases for Agent."""
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -16,7 +16,7 @@ from mini_agent.events import (
     ToolEnd,
     ToolStart,
 )
-from mini_agent.schema import FunctionCall, LLMResponse, Message, ToolCall
+from mini_agent.schema import FunctionCall, LLMResponse, Message, StreamDelta, ToolCall
 from mini_agent.tools.base import Tool, ToolResult
 
 
@@ -39,32 +39,50 @@ class MockTool(Tool):
         return ToolResult(success=True, content=f"Mock result for: {kwargs.get('input', '')}")
 
 
+def _make_stream_mock(responses):
+    """Create a mock LLM client whose generate_stream() yields StreamDelta events.
+
+    Args:
+        responses: A single LLMResponse or a list of LLMResponse objects.
+                   Each call to generate_stream() consumes the next response.
+    """
+    if isinstance(responses, LLMResponse):
+        responses = [responses]
+    response_iter = iter(responses)
+
+    mock_llm = MagicMock()
+
+    async def _stream(*args, **kwargs):
+        resp = next(response_iter)
+        if resp.thinking:
+            yield StreamDelta(type="thinking_delta", text=resp.thinking)
+        if resp.content:
+            yield StreamDelta(type="text_delta", text=resp.content)
+        yield StreamDelta(type="message_complete", response=resp)
+
+    mock_llm.generate_stream = _stream
+    return mock_llm
+
+
 # --- Backward-compatible run() tests ---
 
 
 @pytest.mark.asyncio
 async def test_agent_no_tool_calls():
     """Test agent returns immediately when LLM gives no tool calls."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.return_value = LLMResponse(
-        content="Hello!", finish_reason="stop"
-    )
+    mock_llm = _make_stream_mock(LLMResponse(content="Hello!", finish_reason="stop"))
 
     agent = Agent(llm_client=mock_llm, system_prompt="You are helpful.", tools=[])
     agent.add_user_message("Hi")
     result = await agent.run()
 
     assert result == "Hello!"
-    assert mock_llm.generate.call_count == 1
 
 
 @pytest.mark.asyncio
 async def test_agent_with_tool_call():
     """Test agent handles tool calls correctly."""
-    mock_llm = AsyncMock()
-
-    # First call: LLM wants to use a tool
-    mock_llm.generate.side_effect = [
+    mock_llm = _make_stream_mock([
         LLMResponse(
             content="Let me use the tool.",
             tool_calls=[
@@ -76,9 +94,8 @@ async def test_agent_with_tool_call():
             ],
             finish_reason="tool_use",
         ),
-        # Second call: LLM gives final answer
         LLMResponse(content="Done! The result was mock.", finish_reason="stop"),
-    ]
+    ])
 
     tool = MockTool()
     agent = Agent(llm_client=mock_llm, system_prompt="You are helpful.", tools=[tool])
@@ -86,14 +103,12 @@ async def test_agent_with_tool_call():
     result = await agent.run()
 
     assert result == "Done! The result was mock."
-    assert mock_llm.generate.call_count == 2
 
 
 @pytest.mark.asyncio
 async def test_agent_unknown_tool():
     """Test agent handles unknown tool gracefully."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.side_effect = [
+    mock_llm = _make_stream_mock([
         LLMResponse(
             content="",
             tool_calls=[
@@ -106,7 +121,7 @@ async def test_agent_unknown_tool():
             finish_reason="tool_use",
         ),
         LLMResponse(content="Tool not found.", finish_reason="stop"),
-    ]
+    ])
 
     agent = Agent(llm_client=mock_llm, system_prompt="You are helpful.", tools=[])
     agent.add_user_message("Do something")
@@ -118,8 +133,7 @@ async def test_agent_unknown_tool():
 @pytest.mark.asyncio
 async def test_agent_cancellation():
     """Test agent respects cancel event."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.return_value = LLMResponse(
+    mock_llm = _make_stream_mock(LLMResponse(
         content="This should not be the result",
         tool_calls=[
             ToolCall(
@@ -129,7 +143,7 @@ async def test_agent_cancellation():
             )
         ],
         finish_reason="tool_use",
-    )
+    ))
 
     cancel_event = asyncio.Event()
     cancel_event.set()  # Cancel immediately
@@ -144,8 +158,8 @@ async def test_agent_cancellation():
 @pytest.mark.asyncio
 async def test_agent_max_steps():
     """Test agent stops at max steps."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.return_value = LLMResponse(
+    # For max_steps test, we need repeated identical responses
+    tool_response = LLMResponse(
         content="Still working...",
         tool_calls=[
             ToolCall(
@@ -156,20 +170,19 @@ async def test_agent_max_steps():
         ],
         finish_reason="tool_use",
     )
+    mock_llm = _make_stream_mock([tool_response] * 3)
 
     agent = Agent(llm_client=mock_llm, system_prompt="You are helpful.", tools=[MockTool()], max_steps=3)
     agent.add_user_message("Loop forever")
     result = await agent.run()
 
     assert "couldn't be completed" in result.lower()
-    assert mock_llm.generate.call_count == 3
 
 
 @pytest.mark.asyncio
 async def test_agent_get_history():
     """Test get_history returns message copy."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.return_value = LLMResponse(content="Hi!", finish_reason="stop")
+    mock_llm = _make_stream_mock(LLMResponse(content="Hi!", finish_reason="stop"))
 
     agent = Agent(llm_client=mock_llm, system_prompt="System", tools=[])
     agent.add_user_message("Hello")
@@ -188,10 +201,7 @@ async def test_agent_get_history():
 @pytest.mark.asyncio
 async def test_stream_no_tool_calls():
     """Test run_stream yields TextChunk and AgentDone when no tools used."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.return_value = LLMResponse(
-        content="Hello!", finish_reason="stop"
-    )
+    mock_llm = _make_stream_mock(LLMResponse(content="Hello!", finish_reason="stop"))
 
     agent = Agent(llm_client=mock_llm, system_prompt="You are helpful.", tools=[])
     agent.add_user_message("Hi")
@@ -207,12 +217,11 @@ async def test_stream_no_tool_calls():
 @pytest.mark.asyncio
 async def test_stream_with_thinking():
     """Test run_stream yields ThinkingChunk when thinking is present."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.return_value = LLMResponse(
+    mock_llm = _make_stream_mock(LLMResponse(
         content="The answer is 42.",
         thinking="Let me think about this...",
         finish_reason="stop",
-    )
+    ))
 
     agent = Agent(llm_client=mock_llm, system_prompt="You are helpful.", tools=[])
     agent.add_user_message("What is the meaning?")
@@ -231,8 +240,7 @@ async def test_stream_with_thinking():
 @pytest.mark.asyncio
 async def test_stream_tool_lifecycle():
     """Test run_stream yields ToolStart and ToolEnd around tool execution."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.side_effect = [
+    mock_llm = _make_stream_mock([
         LLMResponse(
             content="Using tool.",
             tool_calls=[
@@ -245,7 +253,7 @@ async def test_stream_tool_lifecycle():
             finish_reason="tool_use",
         ),
         LLMResponse(content="Done.", finish_reason="stop"),
-    ]
+    ])
 
     tool = MockTool()
     agent = Agent(llm_client=mock_llm, system_prompt="Test", tools=[tool])
@@ -276,8 +284,7 @@ async def test_stream_tool_lifecycle():
 @pytest.mark.asyncio
 async def test_stream_unknown_tool():
     """Test run_stream yields ToolEnd with error for unknown tools."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.side_effect = [
+    mock_llm = _make_stream_mock([
         LLMResponse(
             content="",
             tool_calls=[
@@ -290,7 +297,7 @@ async def test_stream_unknown_tool():
             finish_reason="tool_use",
         ),
         LLMResponse(content="OK", finish_reason="stop"),
-    ]
+    ])
 
     agent = Agent(llm_client=mock_llm, system_prompt="Test", tools=[])
     agent.add_user_message("Do it")
@@ -305,9 +312,8 @@ async def test_stream_unknown_tool():
 
 @pytest.mark.asyncio
 async def test_stream_cancellation():
-    """Test run_stream yields AgentDone on cancellation."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.return_value = LLMResponse(
+    """Test run_stream yields AgentCancelled on cancellation."""
+    mock_llm = _make_stream_mock(LLMResponse(
         content="Working...",
         tool_calls=[
             ToolCall(
@@ -317,7 +323,7 @@ async def test_stream_cancellation():
             )
         ],
         finish_reason="tool_use",
-    )
+    ))
 
     cancel_event = asyncio.Event()
     cancel_event.set()
@@ -334,8 +340,7 @@ async def test_stream_cancellation():
 @pytest.mark.asyncio
 async def test_stream_max_steps():
     """Test run_stream yields AgentError when max steps exceeded."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.return_value = LLMResponse(
+    tool_response = LLMResponse(
         content="Working...",
         tool_calls=[
             ToolCall(
@@ -346,6 +351,7 @@ async def test_stream_max_steps():
         ],
         finish_reason="tool_use",
     )
+    mock_llm = _make_stream_mock([tool_response] * 2)
 
     agent = Agent(llm_client=mock_llm, system_prompt="Test", tools=[MockTool()], max_steps=2)
     agent.add_user_message("Loop")
@@ -360,8 +366,13 @@ async def test_stream_max_steps():
 @pytest.mark.asyncio
 async def test_stream_llm_error():
     """Test run_stream yields AgentError on LLM failure."""
-    mock_llm = AsyncMock()
-    mock_llm.generate.side_effect = RuntimeError("API down")
+    mock_llm = MagicMock()
+
+    async def _error_stream(*args, **kwargs):
+        raise RuntimeError("API down")
+        yield  # make it an async generator  # pragma: no cover
+
+    mock_llm.generate_stream = _error_stream
 
     agent = Agent(llm_client=mock_llm, system_prompt="Test", tools=[])
     agent.add_user_message("Hi")
@@ -380,8 +391,7 @@ async def test_stream_permission_denied():
     async def deny_all(tool_name, arguments):
         return False
 
-    mock_llm = AsyncMock()
-    mock_llm.generate.side_effect = [
+    mock_llm = _make_stream_mock([
         LLMResponse(
             content="Let me run this.",
             tool_calls=[
@@ -394,7 +404,7 @@ async def test_stream_permission_denied():
             finish_reason="tool_use",
         ),
         LLMResponse(content="Permission was denied.", finish_reason="stop"),
-    ]
+    ])
 
     tool = MockTool()
     agent = Agent(
@@ -430,8 +440,7 @@ async def test_stream_permission_granted():
     async def allow_all(tool_name, arguments):
         return True
 
-    mock_llm = AsyncMock()
-    mock_llm.generate.side_effect = [
+    mock_llm = _make_stream_mock([
         LLMResponse(
             content="Running tool.",
             tool_calls=[
@@ -444,7 +453,7 @@ async def test_stream_permission_granted():
             finish_reason="tool_use",
         ),
         LLMResponse(content="Done.", finish_reason="stop"),
-    ]
+    ])
 
     tool = MockTool()
     agent = Agent(

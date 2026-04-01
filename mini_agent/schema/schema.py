@@ -59,3 +59,15 @@ class LLMResponse(BaseModel):
     tool_calls: list[ToolCall] | None = None
     finish_reason: str
     usage: TokenUsage | None = None  # Token usage from API response
+
+
+class StreamDelta(BaseModel):
+    """A single delta event from an LLM streaming response.
+
+    Yielded by generate_stream() as tokens arrive. The final event
+    has type="message_complete" and carries the full LLMResponse.
+    """
+
+    type: Literal["text_delta", "thinking_delta", "message_complete"]
+    text: str = ""
+    response: LLMResponse | None = None
