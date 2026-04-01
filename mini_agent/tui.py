@@ -36,6 +36,8 @@ from .llm import LLMClient
 from .schema import LLMProvider, Message
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
+from .tools.web_fetch import WebFetchTool
+from .tools.web_search import WebSearchTool
 
 # ── ANSI helpers ──────────────────────────────────────────────────────────────
 
@@ -223,6 +225,8 @@ async def run_tui(
         WriteTool(workspace_dir=workspace),
         EditTool(workspace_dir=workspace),
         BashTool(workspace_dir=workspace),
+        WebSearchTool(),
+        WebFetchTool(),
     ]
 
     perm_mgr = PermissionManager()
