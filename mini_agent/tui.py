@@ -31,6 +31,7 @@ from .events import (
     AgentDone,
     AgentError,
     PermissionRequest,
+    PlanProposal,
     TextChunk,
     ThinkingChunk,
     ToolEnd,
@@ -146,6 +147,7 @@ def _format_tokens(n: int) -> str:
 
 SLASH_COMMANDS = {
     "/help": "Show available commands",
+    "/plan": "Propose changes without executing (/plan <instruction>)",
     "/clear": "Clear conversation history (keep system prompt)",
     "/compact": "Force context compaction",
     "/model": "Show or change model",
@@ -183,6 +185,23 @@ def _render_tool_end(event: ToolEnd) -> None:
 def _truncate(s: str, n: int) -> str:
     s = s.replace("\n", "↵ ")
     return s[:n] + "…" if len(s) > n else s
+
+
+def _render_plan_proposal(event: PlanProposal) -> None:
+    """Display a plan proposal with numbered proposed actions."""
+    print(f"\n{_styled('Proposed Plan', BOLD, CYAN)} ({len(event.proposed_calls)} actions):")
+    print(f"{_styled('─' * 50, DIM)}")
+    for i, call in enumerate(event.proposed_calls, 1):
+        name = call["name"]
+        args = call["arguments"]
+        print(f"  {_styled(f'{i}.', BOLD)} {_styled(name, CYAN, BOLD)}")
+        for k, v in args.items():
+            v_str = str(v)
+            if len(v_str) > 200:
+                v_str = v_str[:200] + "…"
+            v_str = v_str.replace("\n", "↵ ")
+            print(f"     {_styled(k, DIM)}: {v_str}")
+    print(f"{_styled('─' * 50, DIM)}")
 
 
 # ── Main REPL ─────────────────────────────────────────────────────────────────
@@ -426,6 +445,111 @@ async def run_tui(
                     print(f"{_styled('Error loading session:', RED, BOLD)} {e}")
                     continue
                 print(f"{_styled('Session loaded from', GREEN)} {arg}")
+                continue
+
+            if cmd == "/plan":
+                if not arg:
+                    print(f"{_styled('Usage: /plan <instruction>', RED)}")
+                    continue
+
+                agent.add_user_message(arg)
+                cancel_event.clear()
+                start_time = time.monotonic()
+                in_text = False
+                plan_event = None
+
+                try:
+                    async for event in agent.run_stream(
+                        cancel_event=cancel_event, plan_mode=True
+                    ):
+                        if isinstance(event, TextChunk):
+                            if not in_text:
+                                print()
+                                in_text = True
+                            sys.stdout.write(event.content)
+                            sys.stdout.flush()
+                        elif isinstance(event, ThinkingChunk):
+                            print(f"\n{_styled('thinking:', DIM, ITALIC)} {_truncate(event.content, 200)}")
+                        elif isinstance(event, PlanProposal):
+                            if in_text:
+                                print()
+                                in_text = False
+                            _render_plan_proposal(event)
+                            plan_event = event
+                        elif isinstance(event, AgentDone):
+                            if in_text:
+                                print()
+                            if not plan_event:
+                                elapsed = time.monotonic() - start_time
+                                print(f"\n{_styled(f'No actions proposed ({event.steps} steps, {elapsed:.1f}s)', DIM)}")
+                        elif isinstance(event, AgentError):
+                            if in_text:
+                                print()
+                            print(f"\n{_styled('Error:', RED, BOLD)} {event.error}")
+                except KeyboardInterrupt:
+                    cancel_event.set()
+                    print(f"\n{_styled('Cancelled.', YELLOW)}")
+                    continue
+
+                if plan_event:
+                    # Prompt for approval
+                    while True:
+                        try:
+                            answer = input(
+                                f"{_styled('[a]pprove / [r]eject: ', YELLOW)}"
+                            ).strip().lower()
+                        except (EOFError, KeyboardInterrupt):
+                            answer = "r"
+                            break
+                        if answer in ("a", "approve"):
+                            break
+                        if answer in ("r", "reject"):
+                            break
+
+                    if answer in ("a", "approve"):
+                        print(f"{_styled('Executing plan...', GREEN)}")
+                        in_text = False
+                        try:
+                            async for event in agent.execute_plan(
+                                cancel_event=cancel_event
+                            ):
+                                if isinstance(event, TextChunk):
+                                    if not in_text:
+                                        print()
+                                        in_text = True
+                                    sys.stdout.write(event.content)
+                                    sys.stdout.flush()
+                                elif isinstance(event, ThinkingChunk):
+                                    print(f"\n{_styled('thinking:', DIM, ITALIC)} {_truncate(event.content, 200)}")
+                                elif isinstance(event, ToolStart):
+                                    if in_text:
+                                        print()
+                                        in_text = False
+                                    _render_tool_start(event)
+                                elif isinstance(event, ToolEnd):
+                                    _render_tool_end(event)
+                                elif isinstance(event, PermissionRequest):
+                                    pass
+                                elif isinstance(event, AgentDone):
+                                    if in_text:
+                                        print()
+                                    elapsed = time.monotonic() - start_time
+                                    api_total = agent.token_usage.total_tokens
+                                    cost_info = ""
+                                    if api_total > 0:
+                                        cost = calculate_cost(agent.token_usage, model)
+                                        cost_info = f", {format_cost(cost)}"
+                                    print(f"\n{_styled(f'Done ({event.steps} steps, {elapsed:.1f}s{cost_info})', DIM)}")
+                                elif isinstance(event, AgentError):
+                                    if in_text:
+                                        print()
+                                    print(f"\n{_styled('Error:', RED, BOLD)} {event.error}")
+                        except KeyboardInterrupt:
+                            cancel_event.set()
+                            print(f"\n{_styled('Cancelled.', YELLOW)}")
+                    else:
+                        await agent.reject_plan()
+                        print(f"{_styled('Plan rejected.', YELLOW)}")
                 continue
 
             print(f"{_styled('Unknown command:', RED)} {cmd}. Type /help for commands.")

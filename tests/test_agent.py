@@ -11,6 +11,7 @@ from mini_agent.events import (
     AgentDone,
     AgentError,
     PermissionRequest,
+    PlanProposal,
     TextChunk,
     ThinkingChunk,
     ToolEnd,
@@ -476,3 +477,141 @@ async def test_stream_permission_granted():
     ends = [e for e in events if isinstance(e, ToolEnd)]
     assert len(ends) == 1
     assert ends[0].success is True
+
+
+# --- Plan mode tests ---
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_yields_proposal():
+    """Test plan_mode=True yields PlanProposal instead of executing tools."""
+    mock_llm = _make_stream_mock([
+        LLMResponse(
+            content="I'll read the file.",
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    type="function",
+                    function=FunctionCall(name="mock_tool", arguments={"input": "test"}),
+                )
+            ],
+            finish_reason="tool_use",
+        ),
+    ])
+
+    tool = MockTool()
+    agent = Agent(llm_client=mock_llm, system_prompt="Test", tools=[tool])
+    agent.add_user_message("Read the file")
+
+    events = [event async for event in agent.run_stream(plan_mode=True)]
+
+    # Should yield PlanProposal, no ToolStart/ToolEnd
+    proposals = [e for e in events if isinstance(e, PlanProposal)]
+    assert len(proposals) == 1
+    assert len(proposals[0].proposed_calls) == 1
+    assert proposals[0].proposed_calls[0]["name"] == "mock_tool"
+    assert proposals[0].proposed_calls[0]["arguments"] == {"input": "test"}
+
+    starts = [e for e in events if isinstance(e, ToolStart)]
+    assert len(starts) == 0
+
+    ends = [e for e in events if isinstance(e, ToolEnd)]
+    assert len(ends) == 0
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_no_tools_yields_done():
+    """Test plan_mode with no tool calls yields AgentDone normally."""
+    mock_llm = _make_stream_mock(LLMResponse(content="No tools needed.", finish_reason="stop"))
+
+    agent = Agent(llm_client=mock_llm, system_prompt="Test", tools=[])
+    agent.add_user_message("Just talk")
+
+    events = [event async for event in agent.run_stream(plan_mode=True)]
+
+    proposals = [e for e in events if isinstance(e, PlanProposal)]
+    assert len(proposals) == 0
+
+    assert isinstance(events[-1], AgentDone)
+    assert events[-1].content == "No tools needed."
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_runs_tools():
+    """Test execute_plan() executes the pending tool calls."""
+    mock_llm = _make_stream_mock([
+        LLMResponse(
+            content="Plan step.",
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    type="function",
+                    function=FunctionCall(name="mock_tool", arguments={"input": "planned"}),
+                )
+            ],
+            finish_reason="tool_use",
+        ),
+        LLMResponse(content="Plan executed.", finish_reason="stop"),
+    ])
+
+    tool = MockTool()
+    agent = Agent(llm_client=mock_llm, system_prompt="Test", tools=[tool])
+    agent.add_user_message("Plan something")
+
+    # Phase 1: plan mode
+    events = [event async for event in agent.run_stream(plan_mode=True)]
+    proposals = [e for e in events if isinstance(e, PlanProposal)]
+    assert len(proposals) == 1
+
+    # Phase 2: execute the plan
+    exec_events = [event async for event in agent.execute_plan()]
+
+    # Should see ToolStart, ToolEnd, then agent continues to Done
+    starts = [e for e in exec_events if isinstance(e, ToolStart)]
+    assert len(starts) == 1
+    assert starts[0].tool_name == "mock_tool"
+
+    ends = [e for e in exec_events if isinstance(e, ToolEnd)]
+    assert len(ends) == 1
+    assert ends[0].success is True
+
+    done_events = [e for e in exec_events if isinstance(e, AgentDone)]
+    assert len(done_events) == 1
+    assert done_events[0].content == "Plan executed."
+
+
+@pytest.mark.asyncio
+async def test_reject_plan_adds_rejection_messages():
+    """Test reject_plan() adds tool rejection messages to history."""
+    mock_llm = _make_stream_mock([
+        LLMResponse(
+            content="I want to do this.",
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    type="function",
+                    function=FunctionCall(name="mock_tool", arguments={"input": "test"}),
+                ),
+                ToolCall(
+                    id="call_2",
+                    type="function",
+                    function=FunctionCall(name="mock_tool", arguments={"input": "test2"}),
+                ),
+            ],
+            finish_reason="tool_use",
+        ),
+    ])
+
+    tool = MockTool()
+    agent = Agent(llm_client=mock_llm, system_prompt="Test", tools=[tool])
+    agent.add_user_message("Do things")
+
+    events = [event async for event in agent.run_stream(plan_mode=True)]
+    assert any(isinstance(e, PlanProposal) for e in events)
+
+    await agent.reject_plan()
+
+    # Should have tool rejection messages in history
+    tool_msgs = [m for m in agent.messages if m.role == "tool"]
+    assert len(tool_msgs) == 2
+    assert all("Plan rejected" in m.content for m in tool_msgs)

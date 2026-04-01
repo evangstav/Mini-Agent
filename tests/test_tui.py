@@ -9,6 +9,7 @@ import pytest
 from mini_agent.events import (
     AgentDone,
     AgentError,
+    PlanProposal,
     TextChunk,
     ThinkingChunk,
     ToolEnd,
@@ -18,6 +19,7 @@ from mini_agent.schema import Message
 from mini_agent.tui import (
     PermissionManager,
     _format_tokens,
+    _render_plan_proposal,
     _truncate,
     load_session,
     save_session,
@@ -142,3 +144,42 @@ class TestMainEntryPoint:
 
         # main() calls argparse internally; just verify it's callable
         assert callable(main)
+
+
+# ── Unit tests: plan rendering ──────────────────────────────────────────────
+
+
+class TestPlanRendering:
+    def test_render_plan_proposal(self, capsys):
+        """Test plan proposal renders action names and arguments."""
+        event = PlanProposal(
+            proposed_calls=[
+                {"id": "c1", "name": "read_file", "arguments": {"path": "/tmp/test.py"}},
+                {"id": "c2", "name": "bash", "arguments": {"command": "ls -la"}},
+            ],
+            steps=1,
+        )
+        _render_plan_proposal(event)
+        captured = capsys.readouterr()
+        assert "read_file" in captured.out
+        assert "bash" in captured.out
+        assert "/tmp/test.py" in captured.out
+        assert "ls -la" in captured.out
+        assert "2 actions" in captured.out
+
+    def test_render_plan_truncates_long_values(self, capsys):
+        """Test plan proposal truncates long argument values."""
+        event = PlanProposal(
+            proposed_calls=[
+                {"id": "c1", "name": "write_file", "arguments": {"content": "x" * 300}},
+            ],
+            steps=1,
+        )
+        _render_plan_proposal(event)
+        captured = capsys.readouterr()
+        assert "…" in captured.out
+
+    def test_slash_commands_includes_plan(self):
+        """Test /plan is listed in SLASH_COMMANDS."""
+        from mini_agent.tui import SLASH_COMMANDS
+        assert "/plan" in SLASH_COMMANDS

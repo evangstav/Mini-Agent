@@ -80,6 +80,14 @@ class AgentCancelled(AgentEvent):
     steps: int
 
 
+class PlanProposal(AgentEvent):
+    """Proposed tool calls awaiting user approval (plan mode)."""
+
+    type: Literal["plan_proposal"] = "plan_proposal"
+    proposed_calls: list[dict[str, Any]]  # [{id, name, arguments}]
+    steps: int
+
+
 class AgentError(AgentEvent):
     """Agent encountered an error."""
 
