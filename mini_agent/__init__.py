@@ -1,7 +1,14 @@
 """Mini Agent - Minimal single agent with basic tools and MCP support."""
 
 from .agent import Agent
-from .context import SystemPromptBuilder, ToolResultStore, compact_messages, estimate_tokens
+from .context import (
+    SessionMemory,
+    SystemPromptBuilder,
+    ToolResultStore,
+    compact_messages,
+    estimate_tokens,
+    microcompact_messages,
+)
 from .events import (
     AgentDone,
     AgentError,
@@ -34,7 +41,9 @@ __all__ = [
     "ToolStart",
     "FunctionCall",
     "ToolResultStore",
+    "SessionMemory",
     "SystemPromptBuilder",
     "compact_messages",
+    "microcompact_messages",
     "estimate_tokens",
 ]

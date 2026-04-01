@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import Optional
 
-from .context import SystemPromptBuilder, ToolResultStore, compact_messages
+from .context import SessionMemory, SystemPromptBuilder, ToolResultStore, compact_messages
 from .events import (
     AgentDone,
     AgentError,
@@ -38,12 +38,14 @@ class Agent:
         compact_threshold: int = 80_000,
         project_dir: str | None = None,
         permission_callback: object = None,
+        session_memory: SessionMemory | None = None,
     ):
         self.llm = llm_client
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
         self.tool_result_store = tool_result_store
         self.compact_threshold = compact_threshold
+        self.session_memory = session_memory
 
         # Build system prompt with CLAUDE.md and git info if project_dir given
         if project_dir:
@@ -75,7 +77,10 @@ class Agent:
             # Compact context if it's getting large
             if self.compact_threshold > 0:
                 self.messages = await compact_messages(
-                    self.messages, self.llm, self.compact_threshold
+                    self.messages,
+                    self.llm,
+                    self.compact_threshold,
+                    session_memory=self.session_memory,
                 )
 
             # Think: call LLM
