@@ -1,4 +1,4 @@
-"""Shell command execution tool."""
+"""Shell command execution tool with background process support."""
 
 import asyncio
 import os
@@ -62,6 +62,63 @@ DANGEROUS_PATTERNS = [
 ]
 
 
+class _BackgroundProcess:
+    """Tracks a background subprocess and its accumulated output."""
+
+    def __init__(self, process: asyncio.subprocess.Process, command: str):
+        self.process = process
+        self.command = command
+        self._stdout_chunks: list[bytes] = []
+        self._stderr_chunks: list[bytes] = []
+        self._read_pos_out = 0
+        self._read_pos_err = 0
+        self._reader_task: asyncio.Task | None = None
+
+    async def start_readers(self) -> None:
+        """Spawn tasks that drain stdout/stderr into buffers."""
+        self._reader_task = asyncio.ensure_future(self._drain())
+
+    async def _drain(self) -> None:
+        """Read from stdout and stderr concurrently until EOF."""
+        async def _read_stream(
+            stream: asyncio.StreamReader | None, buf: list[bytes]
+        ) -> None:
+            if stream is None:
+                return
+            while True:
+                chunk = await stream.read(8192)
+                if not chunk:
+                    break
+                buf.append(chunk)
+
+        await asyncio.gather(
+            _read_stream(self.process.stdout, self._stdout_chunks),
+            _read_stream(self.process.stderr, self._stderr_chunks),
+        )
+
+    def get_new_output(self) -> str:
+        """Return output accumulated since last call."""
+        stdout = b"".join(self._stdout_chunks)
+        stderr = b"".join(self._stderr_chunks)
+        new_out = stdout[self._read_pos_out:]
+        new_err = stderr[self._read_pos_err:]
+        self._read_pos_out = len(stdout)
+        self._read_pos_err = len(stderr)
+        text = new_out.decode("utf-8", errors="replace")
+        if new_err:
+            text += f"\n[stderr]:\n{new_err.decode('utf-8', errors='replace')}"
+        return _truncate_output(text) if text else "(no new output)"
+
+    @property
+    def is_running(self) -> bool:
+        return self.process.returncode is None
+
+
+# Shared registry of background processes, keyed by integer ID.
+_background_processes: dict[int, _BackgroundProcess] = {}
+_next_pid = 1
+
+
 class BashTool(Tool):
     """Execute shell commands with basic safety filtering."""
 
@@ -92,6 +149,15 @@ class BashTool(Tool):
                     "description": "Timeout in seconds (default: 120, max: 600).",
                     "default": 120,
                 },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": (
+                        "Run the command in the background. Returns immediately "
+                        "with a process_id. Use bash_output to read output, "
+                        "bash_kill to stop the process."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["command"],
         }
@@ -106,8 +172,12 @@ class BashTool(Tool):
                 return False, f"Command matches blocked pattern: {pattern}"
         return True, ""
 
-    async def execute(self, command: str, timeout: int = 120) -> ToolResult:
+    async def execute(
+        self, command: str, timeout: int = 120, run_in_background: bool = False
+    ) -> ToolResult:
         """Execute a shell command with safety checks."""
+        global _next_pid
+
         # Security check
         is_safe, reason = self._is_command_safe(command)
         if not is_safe:
@@ -142,6 +212,18 @@ class BashTool(Tool):
                     env=safe_env,
                 )
 
+            if run_in_background:
+                pid = _next_pid
+                _next_pid += 1
+                bg = _BackgroundProcess(process, command)
+                _background_processes[pid] = bg
+                await bg.start_readers()
+                return ToolResult(
+                    success=True,
+                    content=f"Background process started (process_id={pid}). "
+                    f"Use bash_output({pid}) to read output, bash_kill({pid}) to stop.",
+                )
+
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(), timeout=timeout
@@ -165,3 +247,93 @@ class BashTool(Tool):
 
         except Exception as e:
             return ToolResult(success=False, error=str(e))
+
+
+class BashOutputTool(Tool):
+    """Read recent output from a background bash process."""
+
+    @property
+    def name(self) -> str:
+        return "bash_output"
+
+    @property
+    def description(self) -> str:
+        return "Read new output from a background bash process."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "process_id": {
+                    "type": "integer",
+                    "description": "The process ID returned by bash with run_in_background.",
+                },
+            },
+            "required": ["process_id"],
+        }
+
+    async def execute(self, process_id: int) -> ToolResult:
+        bg = _background_processes.get(process_id)
+        if bg is None:
+            return ToolResult(
+                success=False,
+                error=f"No background process with id {process_id}. "
+                f"Active: {list(_background_processes.keys()) or 'none'}",
+            )
+        output = bg.get_new_output()
+        status = "running" if bg.is_running else f"exited (code {bg.process.returncode})"
+        return ToolResult(success=True, content=f"[{status}]\n{output}")
+
+
+class BashKillTool(Tool):
+    """Stop a background bash process."""
+
+    @property
+    def name(self) -> str:
+        return "bash_kill"
+
+    @property
+    def description(self) -> str:
+        return "Stop a background bash process and return its remaining output."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "process_id": {
+                    "type": "integer",
+                    "description": "The process ID returned by bash with run_in_background.",
+                },
+            },
+            "required": ["process_id"],
+        }
+
+    async def execute(self, process_id: int) -> ToolResult:
+        bg = _background_processes.get(process_id)
+        if bg is None:
+            return ToolResult(
+                success=False,
+                error=f"No background process with id {process_id}. "
+                f"Active: {list(_background_processes.keys()) or 'none'}",
+            )
+        if bg.is_running:
+            bg.process.terminate()
+            try:
+                await asyncio.wait_for(bg.process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                bg.process.kill()
+                await bg.process.wait()
+        # Drain remaining output
+        if bg._reader_task and not bg._reader_task.done():
+            try:
+                await asyncio.wait_for(bg._reader_task, timeout=2)
+            except asyncio.TimeoutError:
+                bg._reader_task.cancel()
+        output = bg.get_new_output()
+        del _background_processes[process_id]
+        return ToolResult(
+            success=True,
+            content=f"Process {process_id} stopped (code {bg.process.returncode}).\n{output}",
+        )

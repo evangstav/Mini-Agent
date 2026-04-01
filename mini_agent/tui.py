@@ -35,7 +35,7 @@ from .events import (
 from .llm import LLMClient
 from .sandbox import PermissionMode, Sandbox
 from .schema import LLMProvider, Message
-from .tools.bash_tool import BashTool
+from .tools.bash_tool import BashKillTool, BashOutputTool, BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
 from .tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_async
 from .tools.web_fetch import WebFetchTool
@@ -228,6 +228,8 @@ async def run_tui(
         WriteTool(workspace_dir=workspace),
         EditTool(workspace_dir=workspace),
         BashTool(workspace_dir=workspace),
+        BashOutputTool(),
+        BashKillTool(),
         WebSearchTool(),
         WebFetchTool(),
     ]
