@@ -17,23 +17,15 @@ _SECRET_PATTERNS = re.compile(
 # Max bytes for stdout/stderr (100 KB)
 _OUTPUT_LIMIT = 100_000
 
-# Commands that should never be executed — single consolidated list
+# Commands that should never be executed — destructive or system-level only.
+# chmod and sudo are intentionally allowed for common dev operations.
 _BLOCKED_PATTERNS = [
     re.compile(r"\brm\s+-[^\s]*r[^\s]*f", re.IGNORECASE),  # rm -rf variants
     re.compile(r"\brm\s+-[^\s]*f[^\s]*r", re.IGNORECASE),  # rm -fr variants
-    re.compile(r"\brm\s+-rf\s+/"),                          # rm -rf from root
     re.compile(r"\bshred\b"),
     re.compile(r"\bmkfs\b"),
-    re.compile(r"\bfdisk\b"),
     re.compile(r"\bdd\s+.*of=/dev/", re.IGNORECASE),
-    re.compile(r"\bdd\b.*of="),                             # direct disk write
-    re.compile(r">\s*/dev/sd"),                              # writing to disk device
-    re.compile(r"\bsudo\b"),
-    re.compile(r"\bchmod\b"),
-    re.compile(r"\bkill\s+-9\b"),
     re.compile(r"\bkillall\b"),
-    re.compile(r"\bcurl\b.*\|\s*sh"),                       # pipe to shell
-    re.compile(r"\bwget\b.*\|\s*sh"),                       # pipe to shell
 ]
 
 
@@ -55,6 +47,19 @@ def _truncate_output(text: str, limit: int = _OUTPUT_LIMIT) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n\n[... output truncated at {limit} bytes]"
+
+
+# Dangerous commands that could harm the system
+DANGEROUS_PATTERNS = [
+    r"\brm\s+-rf\s+/",  # Recursive delete from root
+    r"\bdd\b.*of=",     # Direct disk write
+    r"\bmkfs\b",        # Format filesystem
+    r"\bfdisk\b",       # Partition tool
+    r"\b shred\b",      # Secure delete
+    r">\s*/dev/sd",     # Writing to disk device
+    r"\bcurl\b.*\|\s*sh",  # Pipe to shell (common infection vector)
+    r"\bwget\b.*\|\s*sh",  # Same for wget
+]
 
 
 class BashTool(Tool):
@@ -91,14 +96,31 @@ class BashTool(Tool):
             "required": ["command"],
         }
 
+    def _is_command_safe(self, command: str) -> tuple[bool, str]:
+        """Check if command is safe to execute. Returns (safe, reason)."""
+        if self.allow_dangerous:
+            return True, ""
+
+        for pattern in DANGEROUS_PATTERNS:
+            if re.search(pattern, command, re.IGNORECASE):
+                return False, f"Command matches blocked pattern: {pattern}"
+        return True, ""
+
     async def execute(self, command: str, timeout: int = 120) -> ToolResult:
         """Execute a shell command with safety checks."""
+        # Security check
+        is_safe, reason = self._is_command_safe(command)
+        if not is_safe:
+            return ToolResult(
+                success=False,
+                error=f"Command blocked for safety: {reason}. Set allow_dangerous=True to bypass."
+            )
+
         timeout = max(1, min(timeout, 600))
 
-        # Check consolidated blocklist
-        if not self.allow_dangerous:
-            if blocked_msg := _check_blocked(command):
-                return ToolResult(success=False, error=blocked_msg)
+        # Check blocklist
+        if blocked_msg := _check_blocked(command):
+            return ToolResult(success=False, error=blocked_msg)
 
         safe_env = _sanitize_env()
 

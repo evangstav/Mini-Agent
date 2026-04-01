@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from enum import Enum
 from typing import Any, Callable, Coroutine
@@ -10,6 +11,8 @@ from typing import Any, Callable, Coroutine
 from pydantic import BaseModel
 
 from .schema import Message
+
+logger = logging.getLogger(__name__)
 
 
 class HookEvent(str, Enum):
@@ -93,7 +96,7 @@ class HookRegistry:
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 # In production, this would use proper logging
-                print(f"[hooks] {event.value} callback {i} failed: {result}")
+                logger.warning("[hooks] %s callback %d failed: %s", event.value, i, result)
 
     def clear(self, event: HookEvent | None = None) -> None:
         """Remove all hooks, or all hooks for a specific event."""

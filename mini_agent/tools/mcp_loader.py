@@ -2,10 +2,13 @@
 
 import asyncio
 import json
+import logging
 import os
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
@@ -125,11 +128,11 @@ class MCPServerConnection:
                     execute_timeout=self.execute_timeout,
                 ))
 
-            print(f"MCP '{self.name}': loaded {len(self.tools)} tools")
+            logger.info("MCP '%s': loaded %d tools", self.name, len(self.tools))
             return True
 
         except Exception as e:
-            print(f"MCP '{self.name}' failed: {e}")
+            logger.error("MCP '%s' failed: %s", self.name, e)
             if self.exit_stack:
                 await self.exit_stack.aclose()
                 self.exit_stack = None
@@ -146,70 +149,86 @@ class MCPServerConnection:
                 self.session = None
 
 
-_mcp_connections: list[MCPServerConnection] = []
+class MCPManager:
+    """Manages MCP server connections with proper lifecycle.
+
+    Replaces the global _mcp_connections list with instance-level state.
+    """
+
+    def __init__(self) -> None:
+        self.connections: list[MCPServerConnection] = []
+
+    async def load_tools(self, config_path: str = "mcp.json") -> list[Tool]:
+        """Load MCP tools from config file.
+
+        Supports STDIO and URL-based (SSE/HTTP) servers.
+        Falls back to mcp-example.json if mcp.json not found.
+        """
+        config_file = Path(config_path)
+        if not config_file.exists():
+            if config_file.name == "mcp.json":
+                example = config_file.parent / "mcp-example.json"
+                if example.exists():
+                    config_file = example
+                else:
+                    return []
+            else:
+                return []
+
+        try:
+            with open(config_file, encoding="utf-8") as f:
+                config = json.load(f)
+
+            mcp_servers = config.get("mcpServers", {})
+            if not mcp_servers:
+                return []
+
+            all_tools: list[Tool] = []
+            for server_name, sc in mcp_servers.items():
+                if sc.get("disabled", False):
+                    continue
+
+                # Determine connection type
+                conn_type: ConnectionType = sc.get("type", "").lower()  # type: ignore[assignment]
+                if conn_type not in ("stdio", "sse", "http", "streamable_http"):
+                    conn_type = "streamable_http" if sc.get("url") else "stdio"
+
+                connection = MCPServerConnection(
+                    name=server_name, connection_type=conn_type,
+                    command=sc.get("command"), args=sc.get("args", []),
+                    env=sc.get("env", {}), url=sc.get("url"),
+                    headers=sc.get("headers", {}),
+                    connect_timeout=sc.get("connect_timeout", CONNECT_TIMEOUT),
+                    execute_timeout=sc.get("execute_timeout", EXECUTE_TIMEOUT),
+                    sse_read_timeout=sc.get("sse_read_timeout", SSE_READ_TIMEOUT),
+                )
+
+                if await connection.connect():
+                    self.connections.append(connection)
+                    all_tools.extend(connection.tools)
+
+            return all_tools
+
+        except Exception as e:
+            logger.error("Error loading MCP config: %s", e)
+            return []
+
+    async def cleanup(self) -> None:
+        """Clean up all MCP connections."""
+        for connection in self.connections:
+            await connection.disconnect()
+        self.connections.clear()
+
+
+# Backward-compatible module-level functions using a default manager
+_default_manager = MCPManager()
 
 
 async def load_mcp_tools_async(config_path: str = "mcp.json") -> list[Tool]:
-    """Load MCP tools from config file.
-
-    Supports STDIO and URL-based (SSE/HTTP) servers.
-    Falls back to mcp-example.json if mcp.json not found.
-    """
-    global _mcp_connections
-
-    config_file = Path(config_path)
-    if not config_file.exists():
-        if config_file.name == "mcp.json":
-            example = config_file.parent / "mcp-example.json"
-            if example.exists():
-                config_file = example
-            else:
-                return []
-        else:
-            return []
-
-    try:
-        with open(config_file, encoding="utf-8") as f:
-            config = json.load(f)
-
-        mcp_servers = config.get("mcpServers", {})
-        if not mcp_servers:
-            return []
-
-        all_tools: list[Tool] = []
-        for server_name, sc in mcp_servers.items():
-            if sc.get("disabled", False):
-                continue
-
-            # Determine connection type
-            conn_type: ConnectionType = sc.get("type", "").lower()  # type: ignore[assignment]
-            if conn_type not in ("stdio", "sse", "http", "streamable_http"):
-                conn_type = "streamable_http" if sc.get("url") else "stdio"
-
-            connection = MCPServerConnection(
-                name=server_name, connection_type=conn_type,
-                command=sc.get("command"), args=sc.get("args", []),
-                env=sc.get("env", {}), url=sc.get("url"),
-                headers=sc.get("headers", {}),
-                connect_timeout=sc.get("connect_timeout", CONNECT_TIMEOUT),
-                execute_timeout=sc.get("execute_timeout", EXECUTE_TIMEOUT),
-                sse_read_timeout=sc.get("sse_read_timeout", SSE_READ_TIMEOUT),
-            )
-
-            if await connection.connect():
-                _mcp_connections.append(connection)
-                all_tools.extend(connection.tools)
-
-        return all_tools
-
-    except Exception as e:
-        print(f"Error loading MCP config: {e}")
-        return []
+    """Load MCP tools from config file (backward-compatible wrapper)."""
+    return await _default_manager.load_tools(config_path)
 
 
-async def cleanup_mcp_connections():
-    """Clean up all MCP connections."""
-    global _mcp_connections
-    for connection in _mcp_connections:
-        await connection.disconnect()
-    _mcp_connections.clear()
+async def cleanup_mcp_connections() -> None:
+    """Clean up all MCP connections (backward-compatible wrapper)."""
+    await _default_manager.cleanup()

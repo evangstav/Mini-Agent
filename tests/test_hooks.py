@@ -83,7 +83,7 @@ async def test_registry_off_nonexistent_is_noop():
 
 
 @pytest.mark.asyncio
-async def test_registry_callback_error_doesnt_crash(capsys):
+async def test_registry_callback_error_doesnt_crash(caplog):
     """A failing callback doesn't prevent other callbacks from running."""
     registry = HookRegistry()
 
@@ -101,8 +101,7 @@ async def test_registry_callback_error_doesnt_crash(capsys):
     await registry.emit(HookEvent.SESSION_END, payload)
 
     good_cb.assert_awaited_once()
-    captured = capsys.readouterr()
-    assert "boom" in captured.out
+    assert "boom" in caplog.text
 
 
 @pytest.mark.asyncio
