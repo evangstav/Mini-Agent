@@ -49,6 +49,8 @@ from .llm import LLMClient
 from .schema import LLMProvider, Message
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
+from .tools.glob_tool import GlobTool
+from .tools.grep_tool import GrepTool
 
 
 # ── Rich console with custom theme ──────────────────────────────────────────
@@ -189,6 +191,8 @@ async def run_tui(
         WriteTool(workspace_dir=workspace),
         EditTool(workspace_dir=workspace),
         BashTool(workspace_dir=workspace),
+        GlobTool(workspace_dir=workspace),
+        GrepTool(workspace_dir=workspace),
     ]
 
     perm_mgr = PermissionManager()
