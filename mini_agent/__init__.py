@@ -1,8 +1,7 @@
 """Mini Agent - Minimal single agent with basic tools and MCP support."""
 
 from .agent import Agent
-from .context import SystemPromptBuilder, ToolResultStore, compact_messages, estimate_tokens, prune_tool_results
-from .dream import DreamConsolidator, DreamResult
+from .context import SystemPromptBuilder, ToolResultStore, compact_messages, estimate_tokens, extract_handoff_context, prune_tool_results
 from .events import (
     AgentDone,
     AgentError,
@@ -13,7 +12,6 @@ from .events import (
     ToolEnd,
     ToolStart,
 )
-from .hooks import HookEvent, HookRegistry, SessionEndPayload, SessionStartPayload
 from .llm import LLMClient
 from .schema import FunctionCall, LLMProvider, LLMResponse, Message, ToolCall
 
@@ -24,17 +22,11 @@ __all__ = [
     "AgentDone",
     "AgentError",
     "AgentEvent",
-    "DreamConsolidator",
-    "DreamResult",
-    "HookEvent",
-    "HookRegistry",
     "LLMClient",
     "LLMProvider",
     "Message",
     "LLMResponse",
     "PermissionRequest",
-    "SessionEndPayload",
-    "SessionStartPayload",
     "TextChunk",
     "ThinkingChunk",
     "ToolCall",
@@ -45,5 +37,6 @@ __all__ = [
     "SystemPromptBuilder",
     "compact_messages",
     "estimate_tokens",
+    "extract_handoff_context",
     "prune_tool_results",
 ]
