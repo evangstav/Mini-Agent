@@ -11,11 +11,14 @@ Includes a network domain allowlist for web tools.
 
 from __future__ import annotations
 
+import logging
 import re
 import shlex
 from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 
 class PermissionMode(str, Enum):
@@ -221,6 +224,7 @@ class Sandbox:
             Decision.ASK    — prompt the user for approval
         """
         if self.mode == PermissionMode.FULL_ACCESS:
+            logger.debug("Full access: allowing %s", tool_name)
             return Decision.ALLOW
 
         if self.mode == PermissionMode.READONLY:

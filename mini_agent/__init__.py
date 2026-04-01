@@ -14,6 +14,7 @@ from .events import (
     ToolStart,
 )
 from .llm import LLMClient
+from .log import setup_logging
 from .sandbox import Decision, PermissionMode, Sandbox
 from .schema import FunctionCall, LLMProvider, LLMResponse, Message, ToolCall
 
@@ -45,4 +46,5 @@ __all__ = [
     "estimate_tokens",
     "extract_handoff_context",
     "prune_tool_results",
+    "setup_logging",
 ]

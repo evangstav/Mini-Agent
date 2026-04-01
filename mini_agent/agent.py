@@ -1,8 +1,11 @@
 """Core Agent implementation — generator-based event-driven loop."""
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold
 from .events import (
@@ -106,6 +109,8 @@ class Agent:
                 ),
             )
 
+            logger.info("Agent run started (max_steps=%d, session=%s)", self.max_steps, self.session_id)
+
             for step in range(self.max_steps):
                 if cancel_event and cancel_event.is_set():
                     cancel_event_obj = AgentCancelled(content="Task cancelled by user.", steps=step)
@@ -121,6 +126,7 @@ class Agent:
                     )
                     new_count = len(self.messages)
                     if new_count < old_count:
+                        logger.info("Context compacted: %d → %d messages", old_count, new_count)
                         # Compaction happened — fire the COMPACT hook
                         summary_text = ""
                         if new_count > 1 and self.messages[1].role == "assistant":
@@ -135,6 +141,7 @@ class Agent:
                             ),
                         )
 
+                logger.debug("Step %d: calling LLM", step)
                 # Think: call LLM with streaming
                 try:
                     response = None
@@ -156,6 +163,7 @@ class Agent:
                         yield error_event
                         return
                 except Exception as e:
+                    logger.error("LLM call failed at step %d: %s", step, e)
                     error_event = AgentError(error=f"LLM call failed: {e}", steps=step)
                     await self._emit_session_end(error_event)
                     yield error_event
@@ -178,6 +186,7 @@ class Agent:
 
                 # No tool calls → task complete
                 if not response.tool_calls:
+                    logger.info("Agent completed at step %d", step + 1)
                     done_event = AgentDone(content=response.content, steps=step + 1)
                     await self._emit_session_end(done_event)
                     yield done_event
@@ -196,6 +205,7 @@ class Agent:
 
                     # Sandbox decision
                     decision = self.sandbox.check(function_name, arguments)
+                    logger.debug("Tool %s: sandbox decision=%s", function_name, decision.value)
 
                     if decision == Decision.DENY:
                         denied_result = ToolResult(
@@ -308,6 +318,7 @@ class Agent:
                     yield cancel_event_obj
                     return
 
+            logger.warning("Agent hit max steps (%d)", self.max_steps)
             error_event = AgentError(
                 error=f"Task couldn't be completed after {self.max_steps} steps.",
                 steps=self.max_steps,

@@ -2,12 +2,15 @@
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from .schema import Message
+
+logger = logging.getLogger(__name__)
 
 
 # --- Tool Result Storage ---
@@ -28,6 +31,7 @@ class ToolResultStore:
         if len(content) <= self.preview_chars:
             return content
 
+        logger.debug("Storing large tool result (%d chars) to disk", len(content))
         # Persist full result
         file_hash = hashlib.sha256(tool_call_id.encode()).hexdigest()[:12]
         result_path = self.storage_dir / f"{file_hash}.txt"
@@ -121,6 +125,7 @@ def prune_tool_results(
     if not prune_indices:
         return messages  # Nothing to prune
 
+    logger.info("Pruning %d oversized tool results", len(prune_indices))
     # Build new list, replacing pruned messages
     result = []
     for i, msg in enumerate(messages):
@@ -186,6 +191,7 @@ async def compact_messages(
     if current_tokens < token_threshold:
         return messages
 
+    logger.info("Compacting context: %d tokens (threshold %d)", current_tokens, token_threshold)
     # Separate system message from conversation
     system_msg = messages[0] if messages and messages[0].role == "system" else None
     conversation = messages[1:] if system_msg else messages
@@ -234,7 +240,8 @@ async def compact_messages(
             ]
         )
         summary_text = summary_response.content
-    except Exception:
+    except Exception as exc:
+        logger.warning("Compaction summarization failed: %s", exc)
         # If summarization fails, fall back to naive truncation
         summary_text = f"[Prior context: {len(old_turns)} messages omitted due to context limits]"
 
