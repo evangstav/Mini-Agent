@@ -4,6 +4,7 @@ import asyncio
 import json
 from typing import Optional
 
+from .context import SystemPromptBuilder, ToolResultStore, compact_messages
 from .llm import LLMClient
 from .schema import Message
 from .tools.base import Tool, ToolResult
@@ -18,10 +19,21 @@ class Agent:
         system_prompt: str,
         tools: list[Tool],
         max_steps: int = 50,
+        tool_result_store: ToolResultStore | None = None,
+        compact_threshold: int = 80_000,
+        project_dir: str | None = None,
     ):
         self.llm = llm_client
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
+        self.tool_result_store = tool_result_store
+        self.compact_threshold = compact_threshold
+
+        # Build system prompt with CLAUDE.md and git info if project_dir given
+        if project_dir:
+            builder = SystemPromptBuilder(system_prompt, project_dir)
+            system_prompt = builder.build()
+
         self.system_prompt = system_prompt
         self.messages: list[Message] = [Message(role="system", content=system_prompt)]
 
@@ -41,6 +53,12 @@ class Agent:
         for step in range(self.max_steps):
             if cancel_event and cancel_event.is_set():
                 return "Task cancelled by user."
+
+            # Compact context if it's getting large
+            if self.compact_threshold > 0:
+                self.messages = await compact_messages(
+                    self.messages, self.llm, self.compact_threshold
+                )
 
             # Think: call LLM
             try:
@@ -81,10 +99,15 @@ class Agent:
                             success=False, content="", error=f"Tool execution failed: {e}"
                         )
 
+                # Store large results to disk if configured
+                content = result.content if result.success else f"Error: {result.error}"
+                if self.tool_result_store and result.success:
+                    content = self.tool_result_store.store_if_large(content, tool_call_id)
+
                 self.messages.append(
                     Message(
                         role="tool",
-                        content=result.content if result.success else f"Error: {result.error}",
+                        content=content,
                         tool_call_id=tool_call_id,
                         name=function_name,
                     )
