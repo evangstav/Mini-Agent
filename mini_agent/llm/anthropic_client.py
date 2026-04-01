@@ -165,21 +165,27 @@ class AnthropicClient(LLMClientBase):
                 else:
                     api_messages.append({"role": msg.role, "content": msg.content})
 
-            # For tool result messages
+            # For tool result messages — batch consecutive tool results into one user message
             elif msg.role == "tool":
-                # Anthropic uses user role with tool_result content blocks
-                api_messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": msg.tool_call_id,
-                                "content": msg.content,
-                            }
-                        ],
-                    }
-                )
+                tool_result_block = {
+                    "type": "tool_result",
+                    "tool_use_id": msg.tool_call_id,
+                    "content": msg.content,
+                }
+                # If the previous message is already a batched tool_result user message, append
+                if (api_messages
+                        and api_messages[-1]["role"] == "user"
+                        and isinstance(api_messages[-1]["content"], list)
+                        and api_messages[-1]["content"]
+                        and api_messages[-1]["content"][0].get("type") == "tool_result"):
+                    api_messages[-1]["content"].append(tool_result_block)
+                else:
+                    api_messages.append(
+                        {
+                            "role": "user",
+                            "content": [tool_result_block],
+                        }
+                    )
 
         return system_message, api_messages
 

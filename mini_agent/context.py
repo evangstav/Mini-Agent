@@ -54,7 +54,7 @@ class ToolResultStore:
 # --- Token Estimation ---
 
 def estimate_tokens(messages: list[Message]) -> int:
-    """Rough token estimate: ~4 chars per token."""
+    """Rough token estimate: ~3 chars per token (conservative for code-heavy context)."""
     total_chars = 0
     for msg in messages:
         if isinstance(msg.content, str):
@@ -65,7 +65,7 @@ def estimate_tokens(messages: list[Message]) -> int:
             total_chars += len(msg.thinking)
         if msg.tool_calls:
             total_chars += len(json.dumps([tc.model_dump() for tc in msg.tool_calls]))
-    return total_chars // 4
+    return total_chars // 3
 
 
 # --- Tool Result Pruning ---
@@ -228,7 +228,7 @@ async def compact_messages(
         summary_text = f"[Prior context: {len(old_turns)} messages omitted due to context limits]"
 
     summary_msg = Message(
-        role="user",
+        role="assistant",
         content=f"[Context summary of {len(old_turns)} earlier messages]:\n{summary_text}",
     )
 
@@ -257,11 +257,55 @@ class SystemPromptBuilder:
         if instructions:
             parts.append(f"\n\n# Project Instructions\n\n{instructions}")
 
+        memories = self._load_memories()
+        if memories:
+            parts.append(f"\n\n# Persistent Memory\n\n{memories}")
+
         git_info = self._get_git_info()
         if git_info:
             parts.append(f"\n\n# Git Context\n\n{git_info}")
 
         return "\n".join(parts)
+
+    def _load_memories(self) -> str | None:
+        """Load persistent memory files from the memory directory.
+
+        Reads MEMORY.md index and referenced memory files from
+        .claude/memory/ in the project directory.
+
+        Returns merged memory content or None if no memories found.
+        """
+        memory_dir = Path(self.project_dir) / ".claude" / "memory"
+        if not memory_dir.is_dir():
+            return None
+
+        index_path = memory_dir / "MEMORY.md"
+        if not index_path.is_file():
+            return None
+
+        sections: list[str] = []
+        char_budget = 4000
+        chars_used = 0
+
+        # Include the index
+        index_content = index_path.read_text(encoding="utf-8")
+        sections.append(f"## Memory Index\n\n{index_content}")
+        chars_used += len(index_content)
+
+        # Include individual memory files
+        for path in sorted(memory_dir.glob("*.md")):
+            if path.name == "MEMORY.md":
+                continue
+            remaining = char_budget - chars_used
+            if remaining <= 0:
+                break
+            content = path.read_text(encoding="utf-8")
+            if len(content) > remaining:
+                content = content[:remaining] + "\n[... truncated]"
+            sections.append(f"## {path.stem}\n\n{content}")
+            chars_used += len(content)
+
+        return "\n\n".join(sections) if len(sections) > 1 else None
 
     def _discover_claude_instructions(self) -> str | None:
         """Discover and merge hierarchical CLAUDE.md files.
