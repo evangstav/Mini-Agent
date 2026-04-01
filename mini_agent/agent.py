@@ -505,6 +505,50 @@ class Agent:
             ),
         )
 
+    def fork(self, rewind: int = 0) -> "Agent":
+        """Create an independent fork of this agent with shared history prefix.
+
+        Args:
+            rewind: Number of user/assistant turn pairs to rewind before forking.
+                0 means fork from current point, 1 means drop the last exchange, etc.
+
+        Returns:
+            A new Agent with a copy of the message history up to the fork point.
+        """
+        # Determine how many messages to keep
+        messages = self.messages.copy()
+        if rewind > 0:
+            # Count turn pairs (user+assistant) from the end and trim
+            pairs_removed = 0
+            while pairs_removed < rewind and len(messages) > 1:
+                # Remove from the end: tool results, assistant, user messages
+                if messages[-1].role in ("tool", "assistant"):
+                    messages.pop()
+                elif messages[-1].role == "user":
+                    messages.pop()
+                    pairs_removed += 1
+                else:
+                    break
+
+        forked = Agent(
+            llm_client=self.llm,
+            system_prompt="",  # will be overwritten below
+            tools=list(self.tools.values()),
+            max_steps=self.max_steps,
+            tool_result_store=self.tool_result_store,
+            compact_threshold=self.compact_threshold,
+            context_window=self.context_window,
+            compact_threshold_pct=self.compact_threshold_pct,
+            compaction_reserve=self.compaction_reserve,
+            permission_callback=self._permission_callback,
+            sandbox=self.sandbox,
+            hooks=self.hooks,
+            session_id=self.session_id,
+        )
+        forked.system_prompt = self.system_prompt
+        forked.messages = messages
+        return forked
+
     def get_history(self) -> list[Message]:
         """Get message history."""
         return self.messages.copy()
