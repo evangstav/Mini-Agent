@@ -145,9 +145,9 @@ class SystemPromptBuilder:
         """Assemble the full system prompt."""
         parts = [self.base_prompt]
 
-        claude_md = self._read_claude_md()
-        if claude_md:
-            parts.append(f"\n\n# Project Instructions (CLAUDE.md)\n\n{claude_md}")
+        instructions = self._discover_claude_instructions()
+        if instructions:
+            parts.append(f"\n\n# Project Instructions\n\n{instructions}")
 
         git_info = self._get_git_info()
         if git_info:
@@ -155,16 +155,96 @@ class SystemPromptBuilder:
 
         return "\n".join(parts)
 
-    def _read_claude_md(self) -> str | None:
-        """Read CLAUDE.md from project directory if it exists."""
-        claude_path = Path(self.project_dir) / "CLAUDE.md"
-        if claude_path.exists():
-            content = claude_path.read_text(encoding="utf-8")
-            # Limit to avoid bloating system prompt
-            if len(content) > 4000:
-                return content[:4000] + "\n\n[... CLAUDE.md truncated]"
-            return content
-        return None
+    def _discover_claude_instructions(self) -> str | None:
+        """Discover and merge hierarchical CLAUDE.md files.
+
+        Merges instruction files from three levels (each level adds context):
+          1. Global:    ~/.claude/CLAUDE.md
+          2. Project:   CLAUDE.md files walking up from project_dir to git/fs root
+          3. Local:     .claude/rules/*.md in project_dir
+
+        Returns merged content or None if no files found.
+        """
+        sections: list[str] = []
+        char_budget = 8000  # Total budget across all levels
+        chars_used = 0
+
+        # Level 1: Global (~/.claude/CLAUDE.md)
+        global_path = Path.home() / ".claude" / "CLAUDE.md"
+        chars_used = self._append_file(
+            global_path, "Global Instructions", sections, char_budget, chars_used
+        )
+
+        # Level 2: Project CLAUDE.md files (walk up from project_dir to root)
+        for claude_path in self._walk_up_claude_md():
+            chars_used = self._append_file(
+                claude_path,
+                f"Project Instructions ({claude_path.parent.name}/)",
+                sections,
+                char_budget,
+                chars_used,
+            )
+
+        # Level 3: .claude/rules/*.md in project_dir
+        rules_dir = Path(self.project_dir) / ".claude" / "rules"
+        if rules_dir.is_dir():
+            for rule_file in sorted(rules_dir.glob("*.md")):
+                if rule_file.is_file():
+                    chars_used = self._append_file(
+                        rule_file,
+                        f"Rule: {rule_file.stem}",
+                        sections,
+                        char_budget,
+                        chars_used,
+                    )
+
+        return "\n\n---\n\n".join(sections) if sections else None
+
+    def _walk_up_claude_md(self) -> list[Path]:
+        """Walk up from project_dir, collecting CLAUDE.md files until git/fs root.
+
+        Returns paths ordered from outermost (root) to innermost (project_dir)
+        so that more specific instructions appear last and can override.
+        """
+        found: list[Path] = []
+        current = Path(self.project_dir).resolve()
+
+        while True:
+            candidate = current / "CLAUDE.md"
+            if candidate.is_file():
+                found.append(candidate)
+
+            # Stop at git root or filesystem root
+            if (current / ".git").exists() or current == current.parent:
+                break
+            current = current.parent
+
+        # Reverse: outermost first, project_dir last (most specific wins)
+        found.reverse()
+        return found
+
+    def _append_file(
+        self,
+        path: Path,
+        label: str,
+        sections: list[str],
+        char_budget: int,
+        chars_used: int,
+    ) -> int:
+        """Read a file and append it as a labeled section. Returns updated chars_used."""
+        if not path.is_file():
+            return chars_used
+
+        remaining = char_budget - chars_used
+        if remaining <= 0:
+            return chars_used
+
+        content = path.read_text(encoding="utf-8")
+        if len(content) > remaining:
+            content = content[:remaining] + f"\n\n[... {label} truncated]"
+
+        sections.append(f"## {label}\n\n{content}")
+        return chars_used + len(content)
 
     def _get_git_info(self) -> str | None:
         """Get current branch and recent commits."""

@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -136,23 +137,31 @@ class TestSystemPromptBuilder:
         prompt = builder.build()
         assert "You are helpful." in prompt
 
-    def test_includes_claude_md(self, tmp_path):
+    def test_includes_project_claude_md(self, tmp_path):
+        # Create a .git dir so walk-up stops here
+        (tmp_path / ".git").mkdir()
         (tmp_path / "CLAUDE.md").write_text("# Rules\nBe concise.")
         builder = SystemPromptBuilder("Base prompt.", str(tmp_path))
         prompt = builder.build()
         assert "Be concise." in prompt
-        assert "CLAUDE.md" in prompt
+        assert "Project Instructions" in prompt
 
-    def test_truncates_large_claude_md(self, tmp_path):
+    def test_truncates_large_content(self, tmp_path):
+        (tmp_path / ".git").mkdir()
         (tmp_path / "CLAUDE.md").write_text("x" * 10000)
         builder = SystemPromptBuilder("Base.", str(tmp_path))
         prompt = builder.build()
         assert "truncated" in prompt
 
-    def test_no_claude_md(self, tmp_path):
+    def test_no_claude_md(self, tmp_path, monkeypatch):
+        (tmp_path / ".git").mkdir()
+        # Ensure no global CLAUDE.md is found
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
         builder = SystemPromptBuilder("Base.", str(tmp_path))
         prompt = builder.build()
-        assert "CLAUDE.md" not in prompt
+        assert "Project Instructions" not in prompt
 
     def test_includes_git_info(self):
         # Use the actual repo directory (we're in a git repo)
@@ -160,3 +169,64 @@ class TestSystemPromptBuilder:
         prompt = builder.build()
         # Should include git info since we're in a repo
         assert "Branch:" in prompt or "Git Context" not in prompt
+
+    def test_merges_global_and_project(self, tmp_path, monkeypatch):
+        """Global ~/.claude/CLAUDE.md and project CLAUDE.md are both included."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "CLAUDE.md").write_text("Project rules here.")
+
+        fake_home = tmp_path / "fakehome"
+        (fake_home / ".claude").mkdir(parents=True)
+        (fake_home / ".claude" / "CLAUDE.md").write_text("Global rules here.")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+        builder = SystemPromptBuilder("Base.", str(tmp_path))
+        prompt = builder.build()
+        assert "Global rules here." in prompt
+        assert "Project rules here." in prompt
+        # Global should appear before project (less specific first)
+        assert prompt.index("Global rules") < prompt.index("Project rules")
+
+    def test_includes_local_rules(self, tmp_path):
+        """Files in .claude/rules/*.md are included."""
+        (tmp_path / ".git").mkdir()
+        rules_dir = tmp_path / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "style.md").write_text("Use snake_case.")
+        (rules_dir / "testing.md").write_text("Always write tests.")
+
+        builder = SystemPromptBuilder("Base.", str(tmp_path))
+        prompt = builder.build()
+        assert "Use snake_case." in prompt
+        assert "Always write tests." in prompt
+
+    def test_walk_up_finds_parent_claude_md(self, tmp_path):
+        """CLAUDE.md in parent dirs (up to git root) are discovered."""
+        # Parent is the git root with its own CLAUDE.md
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "CLAUDE.md").write_text("Root instructions.")
+
+        # Subdirectory has its own CLAUDE.md
+        sub = tmp_path / "sub" / "deep"
+        sub.mkdir(parents=True)
+        (sub / "CLAUDE.md").write_text("Deep instructions.")
+
+        builder = SystemPromptBuilder("Base.", str(sub))
+        prompt = builder.build()
+        assert "Root instructions." in prompt
+        assert "Deep instructions." in prompt
+        # Root (outermost) appears before deep (innermost)
+        assert prompt.index("Root instructions") < prompt.index("Deep instructions")
+
+    def test_rules_non_md_files_ignored(self, tmp_path):
+        """Only .md files in .claude/rules/ are included."""
+        (tmp_path / ".git").mkdir()
+        rules_dir = tmp_path / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "valid.md").write_text("Include me.")
+        (rules_dir / "ignored.txt").write_text("Ignore me.")
+
+        builder = SystemPromptBuilder("Base.", str(tmp_path))
+        prompt = builder.build()
+        assert "Include me." in prompt
+        assert "Ignore me." not in prompt
