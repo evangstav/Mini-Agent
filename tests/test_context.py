@@ -1,4 +1,4 @@
-"""Tests for context management — tool result storage, compaction, system prompt."""
+"""Tests for context management — tool result storage, compaction, system prompt, cache."""
 
 import os
 import tempfile
@@ -14,7 +14,8 @@ from mini_agent.context import (
     estimate_tokens,
     extract_handoff_context,
 )
-from mini_agent.schema import LLMResponse, Message
+from mini_agent.llm.anthropic_client import AnthropicClient
+from mini_agent.schema import LLMResponse, Message, TokenUsage
 
 
 # --- ToolResultStore ---
@@ -35,6 +36,8 @@ class TestToolResultStore:
         assert "truncated" in result
         assert "200 chars total" in result
         assert result.startswith("x" * 50)
+        # Preview uses hash-based ref instead of absolute path (cache-stable)
+        assert "ref:" in result
 
     def test_large_result_retrievable(self, tmp_path):
         store = ToolResultStore(storage_dir=str(tmp_path), preview_chars=50)
@@ -52,6 +55,26 @@ class TestToolResultStore:
         nested = tmp_path / "deep" / "nested"
         store = ToolResultStore(storage_dir=str(nested))
         assert nested.exists()
+
+    def test_frozen_preview_returns_identical_string(self, tmp_path):
+        """ContentReplacementState: preview is frozen on first generation."""
+        store = ToolResultStore(storage_dir=str(tmp_path), preview_chars=50)
+        content = "z" * 200
+        first = store.store_if_large(content, "call_frozen")
+        second = store.store_if_large(content, "call_frozen")
+        # Must be byte-identical for prompt cache stability
+        assert first is second
+
+    def test_frozen_preview_ignores_changed_content(self, tmp_path):
+        """Once frozen, even different content returns the original preview."""
+        store = ToolResultStore(storage_dir=str(tmp_path), preview_chars=50)
+        original = "a" * 200
+        first = store.store_if_large(original, "call_stable")
+        # Hypothetical re-call with different content (shouldn't happen, but tests the freeze)
+        different = "b" * 200
+        second = store.store_if_large(different, "call_stable")
+        assert first is second
+        assert second.startswith("a" * 50)
 
 
 # --- Token Estimation ---
@@ -228,6 +251,26 @@ class TestSystemPromptBuilder:
         # Should include git info since we're in a repo
         assert "Branch:" in prompt or "Git Context" not in prompt
 
+    def test_build_parts_separates_stable_and_volatile(self):
+        """build_parts() separates base+instructions from git info."""
+        builder = SystemPromptBuilder("Base.", os.getcwd())
+        stable, volatile = builder.build_parts()
+        assert "Base." in stable
+        # Git info should be in volatile (or None if not in a repo)
+        if volatile:
+            assert "Branch:" in volatile
+        # Stable should NOT contain git info
+        assert "Branch:" not in stable
+
+    def test_build_parts_frozen_across_calls(self, tmp_path):
+        """build_parts() returns identical strings on repeated calls."""
+        (tmp_path / "CLAUDE.md").write_text("# Test rules")
+        builder = SystemPromptBuilder("Base.", str(tmp_path))
+        stable1, volatile1 = builder.build_parts()
+        stable2, volatile2 = builder.build_parts()
+        assert stable1 is stable2
+        assert volatile1 is volatile2
+
 
 # --- Handoff Context Extraction ---
 
@@ -379,3 +422,63 @@ async def test_handoff_no_system_message_uses_default():
 
     assert result[0].role == "system"
     assert result[0].content == "You are a helpful assistant."
+
+
+# --- Prompt Cache: _build_system_blocks ---
+
+
+class TestBuildSystemBlocks:
+    """Tests for AnthropicClient._build_system_blocks (cache control)."""
+
+    def test_splits_on_git_context(self):
+        """System prompt with git context splits into stable + volatile blocks."""
+        content = "Base prompt.\n\n# Git Context\n\nBranch: main\nRecent commits:\nabc1234 fix bug"
+        blocks = AnthropicClient._build_system_blocks(content)
+
+        assert isinstance(blocks, list)
+        assert len(blocks) == 2
+        # First block: stable prefix with cache_control
+        assert blocks[0]["type"] == "text"
+        assert blocks[0]["text"] == "Base prompt."
+        assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+        # Second block: volatile git info without cache_control
+        assert blocks[1]["type"] == "text"
+        assert "Branch: main" in blocks[1]["text"]
+        assert "cache_control" not in blocks[1]
+
+    def test_no_git_context_marks_whole_prompt(self):
+        """Without git context, entire prompt gets cache_control."""
+        content = "You are helpful."
+        blocks = AnthropicClient._build_system_blocks(content)
+
+        assert isinstance(blocks, list)
+        assert len(blocks) == 1
+        assert blocks[0]["text"] == "You are helpful."
+        assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_passthrough_list_blocks(self):
+        """If content is already a list, return it unchanged."""
+        existing = [{"type": "text", "text": "already structured"}]
+        result = AnthropicClient._build_system_blocks(existing)
+        assert result is existing
+
+
+# --- TokenUsage cache fields ---
+
+
+class TestTokenUsageCacheFields:
+    def test_cache_fields_default_to_zero(self):
+        usage = TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+        assert usage.cache_read_input_tokens == 0
+        assert usage.cache_creation_input_tokens == 0
+
+    def test_cache_fields_populated(self):
+        usage = TokenUsage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            cache_read_input_tokens=80,
+            cache_creation_input_tokens=20,
+        )
+        assert usage.cache_read_input_tokens == 80
+        assert usage.cache_creation_input_tokens == 20

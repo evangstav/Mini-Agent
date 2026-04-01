@@ -59,7 +59,9 @@ class Agent:
             else compute_compact_threshold(context_window, compact_threshold_pct, compaction_reserve)
         )
 
-        # Build system prompt with CLAUDE.md and git info if project_dir given
+        # Build system prompt with CLAUDE.md and git info if project_dir given.
+        # The builder freezes the prompt on first call so it stays byte-identical
+        # across API requests — critical for prompt-cache hits.
         if project_dir:
             builder = SystemPromptBuilder(system_prompt, project_dir)
             system_prompt = builder.build()

@@ -11,6 +11,11 @@ from .base import LLMClientBase
 
 logger = logging.getLogger(__name__)
 
+# Cache-control marker for the Anthropic prompt-caching API.
+# Placed on the last block of the system prompt (stable prefix) so the
+# provider can cache everything up to and including that block.
+_CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
+
 
 class AnthropicClient(LLMClientBase):
     """LLM client using Anthropic's protocol.
@@ -47,14 +52,15 @@ class AnthropicClient(LLMClientBase):
 
     async def _make_api_request(
         self,
-        system_message: str | None,
+        system_message: str | list[dict[str, Any]] | None,
         api_messages: list[dict[str, Any]],
         tools: list[Any] | None = None,
     ) -> anthropic.types.Message:
         """Execute API request (core method that can be retried).
 
         Args:
-            system_message: Optional system message
+            system_message: Optional system message — either a plain string
+                or a list of content blocks with cache_control markers.
             api_messages: List of messages in Anthropic format
             tools: Optional list of tools
 
@@ -111,23 +117,73 @@ class AnthropicClient(LLMClientBase):
                 raise TypeError(f"Unsupported tool type: {type(tool)}")
         return result
 
+    @staticmethod
+    def _build_system_blocks(
+        content: str | list[dict[str, Any]],
+    ) -> str | list[dict[str, Any]]:
+        """Convert a system-prompt string into cache-friendly content blocks.
+
+        Splits the prompt at the ``# Git Context`` header (if present) into
+        a **stable prefix** (base prompt + CLAUDE.md) and a **volatile
+        suffix** (git branch/log).  The stable prefix gets a
+        ``cache_control`` marker so the provider can cache it across turns.
+
+        If there is no Git Context section, the entire prompt is marked as
+        cacheable.
+
+        When the content is already a list of blocks (passthrough), it is
+        returned unmodified.
+        """
+        if not isinstance(content, str):
+            return content
+
+        separator = "\n\n# Git Context\n\n"
+        if separator in content:
+            stable, volatile = content.split(separator, 1)
+            return [
+                {
+                    "type": "text",
+                    "text": stable,
+                    "cache_control": _CACHE_CONTROL_EPHEMERAL,
+                },
+                {
+                    "type": "text",
+                    "text": f"# Git Context\n\n{volatile}",
+                },
+            ]
+
+        # No volatile section — mark the whole prompt as cacheable
+        return [
+            {
+                "type": "text",
+                "text": content,
+                "cache_control": _CACHE_CONTROL_EPHEMERAL,
+            }
+        ]
+
     def _convert_messages(
         self, messages: list[Message]
-    ) -> tuple[str | None, list[dict[str, Any]]]:
+    ) -> tuple[str | list[dict[str, Any]] | None, list[dict[str, Any]]]:
         """Convert internal messages to Anthropic format.
+
+        The system message is returned as a list of content blocks with
+        ``cache_control`` markers when possible, enabling Anthropic's
+        prompt caching.  A plain string is returned if the system text
+        contains no cacheable structure.
 
         Args:
             messages: List of internal Message objects
 
         Returns:
-            Tuple of (system_message, api_messages)
+            Tuple of (system_message, api_messages) where system_message
+            may be a string or a list of content blocks.
         """
-        system_message = None
+        system_message: str | list[dict[str, Any]] | None = None
         api_messages = []
 
         for msg in messages:
             if msg.role == "system":
-                system_message = msg.content
+                system_message = self._build_system_blocks(msg.content)
                 continue
 
             # For user and assistant messages
@@ -256,7 +312,24 @@ class AnthropicClient(LLMClientBase):
                 prompt_tokens=total_input_tokens,
                 completion_tokens=output_tokens,
                 total_tokens=total_input_tokens + output_tokens,
+                cache_read_input_tokens=cache_read_tokens,
+                cache_creation_input_tokens=cache_creation_tokens,
             )
+
+            # Log cache metrics for monitoring
+            if cache_read_tokens or cache_creation_tokens:
+                hit_ratio = (
+                    cache_read_tokens / total_input_tokens
+                    if total_input_tokens > 0
+                    else 0.0
+                )
+                logger.info(
+                    "Prompt cache: read=%d created=%d total_input=%d hit_ratio=%.2f",
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                    total_input_tokens,
+                    hit_ratio,
+                )
 
         return LLMResponse(
             content=text_content,

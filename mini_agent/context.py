@@ -13,34 +13,54 @@ from .schema import Message
 # --- Tool Result Storage ---
 
 class ToolResultStore:
-    """Persists large tool results to disk, keeps previews in context."""
+    """Persists large tool results to disk, keeps previews in context.
+
+    Frozen previews: Once a preview is generated for a tool_call_id, it is
+    cached and reused on subsequent calls.  This keeps the message content
+    byte-identical across API requests, which is critical for prompt-cache
+    hits on providers that hash the request prefix.
+    """
 
     def __init__(self, storage_dir: str = ".runtime/tool_results", preview_chars: int = 1500):
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.preview_chars = preview_chars
+        # ContentReplacementState: tool_call_id → frozen preview string
+        self._frozen_previews: dict[str, str] = {}
 
     def store_if_large(self, content: str, tool_call_id: str) -> str:
         """If content exceeds preview_chars, store to disk and return a preview.
+
+        The preview is frozen on first generation: subsequent calls with the
+        same tool_call_id return the identical string, ensuring byte-stable
+        message content for prompt caching.
 
         Returns the (possibly truncated) content to keep in context.
         """
         if len(content) <= self.preview_chars:
             return content
 
+        # Return frozen preview if we already generated one for this call
+        if tool_call_id in self._frozen_previews:
+            return self._frozen_previews[tool_call_id]
+
         # Persist full result
         file_hash = hashlib.sha256(tool_call_id.encode()).hexdigest()[:12]
         result_path = self.storage_dir / f"{file_hash}.txt"
         result_path.write_text(content, encoding="utf-8")
 
-        # Return preview with reference
+        # Build preview with a stable reference (hash, not absolute path)
         preview = content[: self.preview_chars]
         total_chars = len(content)
-        return (
+        frozen = (
             f"{preview}\n\n"
             f"[... truncated — {total_chars} chars total, "
-            f"full result stored at {result_path}]"
+            f"ref: {file_hash}]"
         )
+
+        # Freeze: cache this preview so it never changes
+        self._frozen_previews[tool_call_id] = frozen
+        return frozen
 
     def retrieve(self, tool_call_id: str) -> str | None:
         """Retrieve full tool result from disk."""
@@ -243,25 +263,52 @@ async def compact_messages(
 # --- System Prompt Builder ---
 
 class SystemPromptBuilder:
-    """Builds system prompt from base prompt, CLAUDE.md, and git info."""
+    """Builds system prompt from base prompt, CLAUDE.md, and git info.
+
+    The prompt is split into two sections for prompt-cache optimization:
+      - **Stable prefix**: base prompt + CLAUDE.md instructions.  This part
+        is byte-identical across API calls within the same session, so it
+        qualifies for provider-side prompt caching.
+      - **Volatile suffix**: git branch/log info that changes on every commit.
+        Appended after the stable prefix so the cached prefix is not
+        invalidated by git activity.
+
+    ``build()`` returns the combined prompt (backwards-compatible).
+    ``build_parts()`` returns ``(stable, volatile)`` so callers can apply
+    ``cache_control`` breakpoints between the two sections.
+    """
 
     def __init__(self, base_prompt: str, project_dir: str | None = None):
         self.base_prompt = base_prompt
         self.project_dir = project_dir or os.getcwd()
+        # Cache the built parts so they are frozen for the session
+        self._stable: str | None = None
+        self._volatile: str | None = None
 
     def build(self) -> str:
         """Assemble the full system prompt."""
-        parts = [self.base_prompt]
+        stable, volatile = self.build_parts()
+        if volatile:
+            return f"{stable}\n\n# Git Context\n\n{volatile}"
+        return stable
 
+    def build_parts(self) -> tuple[str, str | None]:
+        """Return (stable_prefix, volatile_suffix).
+
+        Both parts are frozen on first call so repeated invocations return
+        byte-identical strings — essential for prompt-cache hit stability.
+        """
+        if self._stable is not None:
+            return self._stable, self._volatile
+
+        parts = [self.base_prompt]
         instructions = self._discover_claude_instructions()
         if instructions:
             parts.append(f"\n\n# Project Instructions\n\n{instructions}")
+        self._stable = "\n".join(parts)
 
-        git_info = self._get_git_info()
-        if git_info:
-            parts.append(f"\n\n# Git Context\n\n{git_info}")
-
-        return "\n".join(parts)
+        self._volatile = self._get_git_info()
+        return self._stable, self._volatile
 
     def _discover_claude_instructions(self) -> str | None:
         """Discover and merge hierarchical CLAUDE.md files.
