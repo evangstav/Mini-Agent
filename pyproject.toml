@@ -15,10 +15,12 @@ dependencies = [
     "anthropic>=0.39.0",
     "openai>=1.57.4",
     "prompt_toolkit>=3.0.0",
+    "rich>=13.0.0",
 ]
 
 [project.scripts]
 mini-agent = "mini_agent.tui:main"
+mini-agent-simple = "mini_agent.tui_simple:main"
 
 [project.optional-dependencies]
 dev = [

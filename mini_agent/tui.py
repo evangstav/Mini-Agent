@@ -1,7 +1,14 @@
-"""TUI — Interactive terminal interface for Mini-Agent.
+"""TUI — Rich REPL interface for Mini-Agent.
 
-Provides a Claude-Code-like REPL with streaming output, tool call display,
-permission prompts, slash commands, and session save/load.
+Natural terminal prompt (prompt_toolkit) + rich-formatted output.
+No full-screen takeover. Your terminal, your scrollback, your background.
+
+Controls:
+  Enter      → send message
+  Ctrl+C     → cancel running agent
+  Ctrl+D     → quit
+  Esc+Enter  → newline (multi-line input)
+  /help      → slash commands
 """
 
 import asyncio
@@ -17,50 +24,81 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.text import Text
+from rich.theme import Theme
 
 from .agent import Agent
-from .context import ToolResultStore, estimate_tokens
+from .context import ToolResultStore, compact_messages, estimate_tokens
 from .dream import DreamConsolidator
-from .hooks import HookRegistry
 from .events import (
-    AgentCancelled,
     AgentDone,
     AgentError,
+    AgentEvent,
     PermissionRequest,
     TextChunk,
     ThinkingChunk,
     ToolEnd,
     ToolStart,
 )
+from .hooks import HookRegistry
 from .llm import LLMClient
 from .schema import LLMProvider, Message
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
 
-# ── ANSI helpers ──────────────────────────────────────────────────────────────
 
-RESET = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-ITALIC = "\033[3m"
-CYAN = "\033[36m"
-GREEN = "\033[32m"
-YELLOW = "\033[33m"
-RED = "\033[31m"
-MAGENTA = "\033[35m"
-BLUE = "\033[34m"
-WHITE = "\033[37m"
-GRAY = "\033[90m"
+# ── Rich console with custom theme ──────────────────────────────────────────
+
+_THEME = Theme({
+    "info":      "dim",
+    "user":      "bold cyan",
+    "assistant": "default",
+    "tool":      "#a78bfa",
+    "tool.ok":   "#a6e3a1",
+    "tool.err":  "#f38ba8 bold",
+    "thinking":  "dim italic",
+    "done":      "dim",
+    "err":       "#f38ba8 bold",
+    "prompt":    "bold cyan",
+})
+
+console = Console(theme=_THEME, highlight=False)
 
 
-def _styled(text: str, *codes: str) -> str:
-    return "".join(codes) + text + RESET
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _save_session(messages: list[Message], path: str) -> None:
+    data = [msg.model_dump() for msg in messages]
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
 
 
-# ── Permission callback ──────────────────────────────────────────────────────
+def _load_session(path: str) -> list[Message]:
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    return [Message(**item) for item in raw]
+
+
+def _format_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
+
+
+def _truncate(s: str, n: int) -> str:
+    s = s.replace("\n", " ")
+    return s[:n] + "..." if len(s) > n else s
+
+
+# ── Permission manager ──────────────────────────────────────────────────────
 
 class PermissionManager:
-    """Manages tool permission prompts (y/n/always)."""
+    """Manages tool permission prompts (y/n/a)."""
 
     def __init__(self):
         self._always_allowed: set[str] = set()
@@ -69,18 +107,24 @@ class PermissionManager:
         if tool_name in self._always_allowed:
             return True
 
-        # Show what's being requested
         args_preview = json.dumps(arguments, indent=2)
         if len(args_preview) > 300:
             args_preview = args_preview[:300] + "..."
 
-        print(f"\n{_styled('Permission requested:', YELLOW, BOLD)} {_styled(tool_name, CYAN)}")
-        print(f"{_styled('Arguments:', DIM)}")
-        print(f"{GRAY}{args_preview}{RESET}")
+        console.print()
+        console.print(
+            Panel(
+                Text(args_preview, style="dim"),
+                title=f"[bold yellow]allow[/] [bold cyan]{tool_name}[/] [bold yellow]?[/]",
+                title_align="left",
+                border_style="#e2b714",
+                padding=(0, 1),
+            )
+        )
 
         while True:
             try:
-                answer = input(f"{_styled('[y]es / [n]o / [a]lways: ', YELLOW)}").strip().lower()
+                answer = input("  [y]es / [n]o / [a]lways: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 return False
             if answer in ("y", "yes"):
@@ -92,91 +136,17 @@ class PermissionManager:
                 return True
 
 
-# ── Session persistence ───────────────────────────────────────────────────────
+# ── Session persistence ──────────────────────────────────────────────────────
 
 def save_session(messages: list[Message], path: str) -> None:
-    """Save conversation to JSON."""
-    data = [msg.model_dump() for msg in messages]
-    Path(path).write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+    _save_session(messages, path)
 
 
 def load_session(path: str) -> list[Message]:
-    """Load conversation from JSON.
-
-    Raises ValueError with a descriptive message if the file contains
-    invalid JSON or messages that don't conform to the Message schema.
-    """
-    try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Corrupt session file (invalid JSON): {e}") from e
-
-    if not isinstance(raw, list):
-        raise ValueError(f"Corrupt session file: expected a JSON array, got {type(raw).__name__}")
-
-    messages: list[Message] = []
-    for i, item in enumerate(raw):
-        try:
-            messages.append(Message(**item))
-        except Exception as e:
-            raise ValueError(f"Corrupt session file: invalid message at index {i}: {e}") from e
-    return messages
+    return _load_session(path)
 
 
-# ── Cost estimation ───────────────────────────────────────────────────────────
-
-def _format_tokens(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.1f}K"
-    return str(n)
-
-
-# ── Slash commands ────────────────────────────────────────────────────────────
-
-SLASH_COMMANDS = {
-    "/help": "Show available commands",
-    "/clear": "Clear conversation history (keep system prompt)",
-    "/compact": "Force context compaction",
-    "/model": "Show or change model",
-    "/history": "Show conversation turn count and token estimate",
-    "/cost": "Show estimated token usage",
-    "/save": "Save session to file (/save [path])",
-    "/load": "Load session from file (/load <path>)",
-    "/exit": "Exit the REPL",
-}
-
-
-def _print_help() -> None:
-    print(f"\n{_styled('Mini-Agent Commands', BOLD, CYAN)}")
-    print(f"{_styled('─' * 40, DIM)}")
-    for cmd, desc in SLASH_COMMANDS.items():
-        print(f"  {_styled(cmd, GREEN):24s} {desc}")
-    print()
-
-
-# ── Rendering helpers ────────────────────────────────────────────────────────
-
-def _render_tool_start(event: ToolStart) -> None:
-    args_str = ", ".join(f"{k}={_truncate(str(v), 60)}" for k, v in event.arguments.items())
-    print(f"\n  {_styled('▶', BLUE)} {_styled(event.tool_name, CYAN, BOLD)}({_styled(args_str, DIM)})")
-
-
-def _render_tool_end(event: ToolEnd) -> None:
-    if event.success:
-        preview = _truncate(event.content, 200) if event.content else "(empty)"
-        print(f"  {_styled('✓', GREEN)} {_styled(preview, DIM)}")
-    else:
-        print(f"  {_styled('✗', RED)} {_styled(event.error or 'failed', RED)}")
-
-
-def _truncate(s: str, n: int) -> str:
-    s = s.replace("\n", "↵ ")
-    return s[:n] + "…" if len(s) > n else s
-
-
-# ── Main REPL ─────────────────────────────────────────────────────────────────
+# ── Main REPL ────────────────────────────────────────────────────────────────
 
 async def run_tui(
     api_key: str | None = None,
@@ -189,18 +159,16 @@ async def run_tui(
     session_file: str | None = None,
     enable_permissions: bool = True,
 ) -> None:
-    """Launch the interactive TUI REPL."""
+    """Launch the interactive REPL."""
 
-    # ── Resolve config ────────────────────────────────────────────────────
-    # Auto-detect provider from available API keys
+    # ── Resolve config ───────────────────────────────────────────────────
     minimax_key = os.environ.get("MINIMAX_API_KEY", "")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     api_key = api_key or minimax_key or anthropic_key or ""
     if not api_key:
-        print(f"{_styled('Error:', RED, BOLD)} Set MINIMAX_API_KEY or ANTHROPIC_API_KEY environment variable.")
+        console.print("[err]Error:[/] Set MINIMAX_API_KEY or ANTHROPIC_API_KEY")
         sys.exit(1)
 
-    # Default to MiniMax if MINIMAX_API_KEY is set, otherwise Anthropic
     is_minimax = bool(minimax_key) and api_key == minimax_key
     provider_enum = LLMProvider(provider)
     model = model or os.environ.get("MINI_AGENT_MODEL") or (
@@ -212,10 +180,8 @@ async def run_tui(
     workspace = workspace or os.getcwd()
 
     llm_client = LLMClient(
-        api_key=api_key,
-        provider=provider_enum,
-        api_base=api_base,
-        model=model,
+        api_key=api_key, provider=provider_enum,
+        api_base=api_base, model=model,
     )
 
     tools = [
@@ -238,7 +204,6 @@ async def run_tui(
         storage_dir=str(Path(workspace) / ".runtime" / "tool_results")
     )
 
-    # Set up hooks with dream consolidator for persistent memory
     hooks = HookRegistry()
     dream = DreamConsolidator(
         memory_dir=str(Path(workspace) / ".claude" / "memory"),
@@ -257,194 +222,234 @@ async def run_tui(
         hooks=hooks,
     )
 
-    # Load existing session if requested
+    # Load existing session
     if session_file and Path(session_file).exists():
         agent.messages = load_session(session_file)
-        print(f"{_styled('Session loaded from', DIM)} {session_file}")
+        console.print(f"[info]Session loaded from {session_file}[/]")
 
-    # ── Prompt session ────────────────────────────────────────────────────
+    # ── Prompt session ───────────────────────────────────────────────────
     history_path = Path(workspace) / ".runtime" / "repl_history"
     history_path.parent.mkdir(parents=True, exist_ok=True)
     session = PromptSession(history=FileHistory(str(history_path)))
 
-    # Key bindings for multi-line input (Alt+Enter or Escape then Enter to submit)
     kb = KeyBindings()
 
     @kb.add(Keys.Escape, Keys.Enter)
     def _submit(event):
         event.current_buffer.validate_and_handle()
 
-    # ── Banner ────────────────────────────────────────────────────────────
-    print(f"\n{_styled('Mini-Agent', BOLD, CYAN)} {_styled('v0.1.0', DIM)}")
-    print(f"{_styled('Model:', DIM)} {model}  {_styled('Provider:', DIM)} {provider}")
-    print(f"{_styled('Workspace:', DIM)} {workspace}")
-    print(f"{_styled('Type /help for commands. Ctrl+C to cancel. Ctrl+D to exit.', DIM)}\n")
+    # ── Banner ───────────────────────────────────────────────────────────
+    console.print()
+    console.print(f"  [bold cyan]mini-agent[/]  [dim]v0.1.0[/]")
+    console.print(f"  [dim]{model}  ·  {Path(workspace).name}[/]")
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print(f"  [dim]Enter send · Esc+Enter newline · ^C stop · ^D quit · /help commands[/]")
+    console.print(Rule(style="dim"))
+    console.print()
 
     cancel_event = asyncio.Event()
+    show_thinking = False
 
-    # ── REPL loop ─────────────────────────────────────────────────────────
+    # ── REPL loop ────────────────────────────────────────────────────────
     while True:
-        # Build prompt with token count
+        # Build prompt
         token_est = estimate_tokens(agent.messages)
-        prompt_text = FormattedText([
-            ("class:gray", f"[{_format_tokens(token_est)} tokens] "),
-            ("class:prompt", "› "),
-        ])
 
         try:
             user_input = await session.prompt_async(
-                prompt_text,
+                FormattedText([
+                    ("", " "),
+                    ("bold cyan", "› "),
+                ]),
                 multiline=False,
                 key_bindings=kb,
             )
         except KeyboardInterrupt:
             continue
         except EOFError:
-            # Auto-save session before exit
-            auto_save_path = str(Path(workspace) / ".runtime" / "autosave_session.json")
-            if len(agent.messages) > 1:  # More than just the system prompt
-                save_session(agent.messages, auto_save_path)
-                print(f"\n{_styled('Session auto-saved to', DIM)} {auto_save_path}")
-            print(f"{_styled('Goodbye!', DIM)}")
+            # Ctrl+D → quit
+            if len(agent.messages) > 1:
+                auto_path = str(Path(workspace) / ".runtime" / "autosave_session.json")
+                _save_session(agent.messages, auto_path)
+                console.print(f"\n[info]Session saved → {auto_path}[/]")
+            console.print("[dim]Bye![/]")
             break
 
         user_input = user_input.strip()
         if not user_input:
             continue
 
-        # ── Handle slash commands ─────────────────────────────────────────
+        # ── Slash commands ───────────────────────────────────────────────
         if user_input.startswith("/"):
             parts = user_input.split(None, 1)
             cmd = parts[0].lower()
             arg = parts[1] if len(parts) > 1 else ""
 
             if cmd == "/help":
-                _print_help()
+                console.print()
+                for c, d in [
+                    ("/help",         "Show commands"),
+                    ("/clear",        "Clear conversation"),
+                    ("/compact",      "Compress context"),
+                    ("/thinking",     "Toggle thinking display"),
+                    ("/model [name]", "Show/change model"),
+                    ("/history",      "Turns & token count"),
+                    ("/cost",         "Token estimate"),
+                    ("/save [path]",  "Save session"),
+                    ("/load <path>",  "Load session"),
+                    ("/exit",         "Quit"),
+                ]:
+                    console.print(f"  [dim]{c:18s}[/] {d}")
+                console.print()
                 continue
 
-            if cmd == "/exit" or cmd == "/quit":
-                print(f"{_styled('Goodbye!', DIM)}")
+            if cmd in ("/exit", "/quit"):
+                console.print("[dim]Bye![/]")
                 break
 
             if cmd == "/clear":
-                system_msg = agent.messages[0] if agent.messages and agent.messages[0].role == "system" else None
-                agent.messages = [system_msg] if system_msg else []
-                print(f"{_styled('Conversation cleared.', GREEN)}")
+                sys_msg = agent.messages[0] if agent.messages and agent.messages[0].role == "system" else None
+                agent.messages = [sys_msg] if sys_msg else []
+                console.print("[info]Cleared.[/]")
                 continue
 
             if cmd == "/compact":
                 before = estimate_tokens(agent.messages)
-                from .context import compact_messages
                 agent.messages = await compact_messages(
                     agent.messages, agent.llm, token_threshold=0
                 )
                 after = estimate_tokens(agent.messages)
-                print(f"{_styled('Compacted:', GREEN)} {_format_tokens(before)} → {_format_tokens(after)} tokens")
+                console.print(f"[info]Compacted: {_format_tokens(before)} → {_format_tokens(after)}[/]")
+                continue
+
+            if cmd == "/thinking":
+                show_thinking = not show_thinking
+                state = "on" if show_thinking else "off"
+                console.print(f"[info]Thinking display: {state}[/]")
                 continue
 
             if cmd == "/model":
                 if arg:
                     agent.llm = LLMClient(
-                        api_key=api_key,
-                        provider=provider_enum,
-                        api_base=api_base,
-                        model=arg,
+                        api_key=api_key, provider=provider_enum,
+                        api_base=api_base, model=arg,
                     )
                     model = arg
-                    print(f"{_styled('Model changed to:', GREEN)} {arg}")
+                    console.print(f"[info]Model → {arg}[/]")
                 else:
-                    print(f"{_styled('Current model:', DIM)} {model}")
+                    console.print(f"[info]Model: {model}[/]")
                 continue
 
             if cmd == "/history":
                 turns = len([m for m in agent.messages if m.role in ("user", "assistant")])
                 tokens = estimate_tokens(agent.messages)
-                print(f"{_styled('Turns:', DIM)} {turns}  {_styled('Est. tokens:', DIM)} {_format_tokens(tokens)}")
+                console.print(f"[info]{turns} turns · {_format_tokens(tokens)} tokens[/]")
                 continue
 
             if cmd == "/cost":
                 tokens = estimate_tokens(agent.messages)
-                print(f"{_styled('Estimated context:', DIM)} {_format_tokens(tokens)} tokens")
+                console.print(f"[info]{_format_tokens(tokens)} tokens[/]")
                 continue
 
             if cmd == "/save":
-                save_path = arg or "session.json"
-                save_session(agent.messages, save_path)
-                print(f"{_styled('Session saved to', GREEN)} {save_path}")
+                path = arg or "session.json"
+                _save_session(agent.messages, path)
+                console.print(f"[info]Saved → {path}[/]")
                 continue
 
             if cmd == "/load":
                 if not arg:
-                    print(f"{_styled('Usage: /load <path>', RED)}")
+                    console.print("[err]Usage: /load <path>[/]")
                     continue
                 if not Path(arg).exists():
-                    print(f"{_styled('File not found:', RED)} {arg}")
+                    console.print(f"[err]Not found: {arg}[/]")
                     continue
-                try:
-                    agent.messages = load_session(arg)
-                except ValueError as e:
-                    print(f"{_styled('Error loading session:', RED, BOLD)} {e}")
-                    continue
-                print(f"{_styled('Session loaded from', GREEN)} {arg}")
+                agent.messages = load_session(arg)
+                console.print(f"[info]Loaded ← {arg}[/]")
                 continue
 
-            print(f"{_styled('Unknown command:', RED)} {cmd}. Type /help for commands.")
+            console.print(f"[err]Unknown: {cmd}[/]  [dim](try /help)[/]")
             continue
 
-        # ── Send to agent ─────────────────────────────────────────────────
+        # ── Send to agent ────────────────────────────────────────────────
+        console.print()  # blank line after user input
         agent.add_user_message(user_input)
         cancel_event.clear()
         start_time = time.monotonic()
-        in_text = False
+        text_buf = ""
 
         try:
             async for event in agent.run_stream(cancel_event=cancel_event):
                 if isinstance(event, TextChunk):
-                    if not in_text:
-                        print()  # blank line before response
-                        in_text = True
-                    sys.stdout.write(event.content)
-                    sys.stdout.flush()
+                    text_buf += event.content
 
                 elif isinstance(event, ThinkingChunk):
-                    # Show thinking in dim italic
-                    print(f"\n{_styled('thinking:', DIM, ITALIC)} {_truncate(event.content, 200)}")
+                    _flush(text_buf)
+                    text_buf = ""
+                    if show_thinking:
+                        console.print(f"  [thinking]··· {_truncate(event.content, 150)}[/]")
+                    else:
+                        console.print(f"  [thinking]···[/]")
 
                 elif isinstance(event, ToolStart):
-                    if in_text:
-                        print()  # end text block
-                        in_text = False
-                    _render_tool_start(event)
+                    _flush(text_buf)
+                    text_buf = ""
+                    args_str = ", ".join(
+                        f"{k}={_truncate(str(v), 50)}"
+                        for k, v in event.arguments.items()
+                    )
+                    console.print(f"  [tool]▸ {event.tool_name}[/][dim]({args_str})[/]")
 
                 elif isinstance(event, ToolEnd):
-                    _render_tool_end(event)
+                    if event.success:
+                        preview = _truncate(event.content, 100) if event.content else "ok"
+                        console.print(f"  [tool.ok]✓ {event.tool_name}[/] [dim]→ {preview}[/]")
+                    else:
+                        console.print(f"  [tool.err]✗ {event.tool_name}[/] [dim]→ {event.error}[/]")
 
                 elif isinstance(event, PermissionRequest):
-                    pass  # handled by the callback
-
-                elif isinstance(event, AgentCancelled):
-                    if in_text:
-                        print()
-                    elapsed = time.monotonic() - start_time
-                    print(f"\n{_styled(f'Cancelled ({event.steps} steps, {elapsed:.1f}s)', YELLOW)}")
+                    _flush(text_buf)
+                    text_buf = ""
 
                 elif isinstance(event, AgentDone):
-                    if in_text:
-                        print()
+                    _flush(text_buf)
+                    text_buf = ""
                     elapsed = time.monotonic() - start_time
-                    print(f"\n{_styled(f'Done ({event.steps} steps, {elapsed:.1f}s)', DIM)}")
+                    console.print(f"  [done]{event.steps} steps · {elapsed:.1f}s[/]")
+                    console.print()
 
                 elif isinstance(event, AgentError):
-                    if in_text:
-                        print()
-                    print(f"\n{_styled('Error:', RED, BOLD)} {event.error}")
+                    _flush(text_buf)
+                    text_buf = ""
+                    console.print()
+                    console.print(f"  [err]✗ {event.error}[/]")
+                    console.print()
 
         except KeyboardInterrupt:
+            _flush(text_buf)
             cancel_event.set()
-            print(f"\n{_styled('Cancelled.', YELLOW)}")
+            console.print()
+            console.print(f"  [dim]Interrupted.[/]")
+            console.print()
 
 
-# ── CLI entry point ───────────────────────────────────────────────────────────
+def _flush(text_buf: str) -> None:
+    """Render accumulated text as a markdown panel."""
+    if not text_buf:
+        return
+    console.print()
+    console.print(
+        Panel(
+            Markdown(text_buf),
+            border_style="dim",
+            padding=(0, 1),
+            expand=True,
+        )
+    )
+
+
+# ── CLI entry point ──────────────────────────────────────────────────────────
 
 def main() -> None:
     """Parse args and launch TUI."""
@@ -457,7 +462,7 @@ def main() -> None:
     parser.add_argument("--api-key", help="API key (or set ANTHROPIC_API_KEY / MINIMAX_API_KEY)")
     parser.add_argument("--provider", default="anthropic", choices=["anthropic", "openai"],
                         help="LLM provider (default: anthropic)")
-    parser.add_argument("--model", help="Model name (default: MiniMax-M2.7 or claude-sonnet-4-20250514)")
+    parser.add_argument("--model", help="Model name")
     parser.add_argument("--api-base", help="API base URL")
     parser.add_argument("--workspace", "-w", help="Working directory (default: cwd)")
     parser.add_argument("--system-prompt", help="Custom system prompt text")
