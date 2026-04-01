@@ -7,6 +7,7 @@ import pytest
 
 from mini_agent.agent import Agent
 from mini_agent.events import (
+    AgentCancelled,
     AgentDone,
     AgentError,
     PermissionRequest,
@@ -326,7 +327,7 @@ async def test_stream_cancellation():
 
     events = [event async for event in agent.run_stream(cancel_event=cancel_event)]
 
-    assert isinstance(events[-1], AgentDone)
+    assert isinstance(events[-1], AgentCancelled)
     assert "cancelled" in events[-1].content.lower()
 
 

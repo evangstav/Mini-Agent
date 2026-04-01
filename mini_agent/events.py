@@ -1,34 +1,40 @@
 """Agent event types for generator-based streaming."""
 
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class AgentEvent(BaseModel):
     """Base class for all agent events."""
 
     type: str
+    timestamp: datetime = Field(default_factory=_utc_now)
 
 
 class TextChunk(AgentEvent):
     """Streaming text content from LLM response."""
 
-    type: str = "text_chunk"
+    type: Literal["text_chunk"] = "text_chunk"
     content: str
 
 
 class ThinkingChunk(AgentEvent):
     """Extended thinking content from LLM response."""
 
-    type: str = "thinking_chunk"
+    type: Literal["thinking_chunk"] = "thinking_chunk"
     content: str
 
 
 class ToolStart(AgentEvent):
     """Tool execution is starting."""
 
-    type: str = "tool_start"
+    type: Literal["tool_start"] = "tool_start"
     tool_call_id: str
     tool_name: str
     arguments: dict[str, Any]
@@ -37,7 +43,7 @@ class ToolStart(AgentEvent):
 class ToolEnd(AgentEvent):
     """Tool execution completed."""
 
-    type: str = "tool_end"
+    type: Literal["tool_end"] = "tool_end"
     tool_call_id: str
     tool_name: str
     success: bool
@@ -52,7 +58,7 @@ class PermissionRequest(AgentEvent):
     back through the permission callback.
     """
 
-    type: str = "permission_request"
+    type: Literal["permission_request"] = "permission_request"
     tool_call_id: str
     tool_name: str
     arguments: dict[str, Any]
@@ -61,38 +67,22 @@ class PermissionRequest(AgentEvent):
 class AgentDone(AgentEvent):
     """Agent completed its work."""
 
-    type: str = "agent_done"
+    type: Literal["agent_done"] = "agent_done"
     content: str
     steps: int
 
 
-class SubAgentSpawn(AgentEvent):
-    """A sub-agent was forked from the parent agent."""
+class AgentCancelled(AgentEvent):
+    """Agent was cancelled by the user (distinct from normal completion)."""
 
-    type: str = "sub_agent_spawn"
-    agent_id: str
-    task: str
-
-
-class SubAgentDone(AgentEvent):
-    """A sub-agent completed its task."""
-
-    type: str = "sub_agent_done"
-    agent_id: str
-    result: str
-
-
-class SubAgentError(AgentEvent):
-    """A sub-agent encountered an error."""
-
-    type: str = "sub_agent_error"
-    agent_id: str
-    error: str
+    type: Literal["agent_cancelled"] = "agent_cancelled"
+    content: str
+    steps: int
 
 
 class AgentError(AgentEvent):
     """Agent encountered an error."""
 
-    type: str = "agent_error"
+    type: Literal["agent_error"] = "agent_error"
     error: str
     steps: int

@@ -1,11 +1,12 @@
 """Core Agent implementation — generator-based event-driven loop."""
 
 import asyncio
-from collections.abc import AsyncGenerator
-from typing import Optional
+from collections.abc import AsyncGenerator, Callable, Coroutine
+from typing import Any, Optional
 
 from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold
 from .events import (
+    AgentCancelled,
     AgentDone,
     AgentError,
     AgentEvent,
@@ -15,10 +16,13 @@ from .events import (
     ToolEnd,
     ToolStart,
 )
-from .hooks import HookEvent, HookRegistry, SessionEndPayload, SessionStartPayload
+from .hooks import CompactPayload, HookEvent, HookRegistry, SessionEndPayload, SessionStartPayload
 from .llm import LLMClient
 from .schema import Message
 from .tools.base import Tool, ToolResult
+
+# Type alias for the permission callback
+PermissionCallbackType = Callable[[str, dict[str, Any]], Coroutine[Any, Any, bool]]
 
 
 class Agent:
@@ -41,7 +45,7 @@ class Agent:
         compact_threshold_pct: float = 0.85,
         compaction_reserve: int = 20_000,
         project_dir: str | None = None,
-        permission_callback: object = None,
+        permission_callback: PermissionCallbackType | None = None,
         hooks: HookRegistry | None = None,
         session_id: str | None = None,
     ):
@@ -82,7 +86,7 @@ class Agent:
 
         Yields:
             AgentEvent subclasses: TextChunk, ThinkingChunk, ToolStart,
-            ToolEnd, PermissionRequest, AgentDone, AgentError.
+            ToolEnd, PermissionRequest, AgentDone, AgentCancelled, AgentError.
         """
         if self._running:
             raise RuntimeError("run_stream() is already running; concurrent calls are not supported")
@@ -100,16 +104,32 @@ class Agent:
 
             for step in range(self.max_steps):
                 if cancel_event and cancel_event.is_set():
-                    done_event = AgentDone(content="Task cancelled by user.", steps=step)
-                    await self._emit_session_end(done_event)
-                    yield done_event
+                    cancel_event_obj = AgentCancelled(content="Task cancelled by user.", steps=step)
+                    await self._emit_session_end(cancel_event_obj)
+                    yield cancel_event_obj
                     return
 
                 # Compact context if it's getting large
                 if self.compact_threshold > 0:
+                    old_count = len(self.messages)
                     self.messages = await compact_messages(
                         self.messages, self.llm, self.compact_threshold
                     )
+                    new_count = len(self.messages)
+                    if new_count < old_count:
+                        # Compaction happened — fire the COMPACT hook
+                        summary_text = ""
+                        if new_count > 1 and self.messages[1].role == "assistant":
+                            content = self.messages[1].content
+                            if isinstance(content, str):
+                                summary_text = content
+                        await self.hooks.emit(
+                            HookEvent.COMPACT,
+                            CompactPayload(
+                                old_turns_count=old_count - new_count,
+                                summary_text=summary_text,
+                            ),
+                        )
 
                 # Think: call LLM
                 try:
@@ -240,9 +260,9 @@ class Agent:
                         )
 
                 if cancel_event and cancel_event.is_set():
-                    done_event = AgentDone(content="Task cancelled by user.", steps=step + 1)
-                    await self._emit_session_end(done_event)
-                    yield done_event
+                    cancel_event_obj = AgentCancelled(content="Task cancelled by user.", steps=step + 1)
+                    await self._emit_session_end(cancel_event_obj)
+                    yield cancel_event_obj
                     return
 
             error_event = AgentError(
@@ -263,18 +283,20 @@ class Agent:
         async for event in self.run_stream(cancel_event=cancel_event):
             if isinstance(event, AgentDone):
                 return event.content
+            elif isinstance(event, AgentCancelled):
+                return event.content
             elif isinstance(event, AgentError):
                 return event.error
         return ""
 
-    async def _emit_session_end(self, event: AgentDone | AgentError) -> None:
+    async def _emit_session_end(self, event: AgentDone | AgentCancelled | AgentError) -> None:
         """Emit SESSION_END hook with the conversation history."""
-        if isinstance(event, AgentDone):
+        if isinstance(event, AgentCancelled):
+            event_type = "agent_cancelled"
+        elif isinstance(event, AgentDone):
             event_type = "agent_done"
-            steps = event.steps
         else:
             event_type = "agent_error"
-            steps = event.steps
 
         await self.hooks.emit(
             HookEvent.SESSION_END,
@@ -282,7 +304,7 @@ class Agent:
                 session_id=self.session_id,
                 messages=self.messages.copy(),
                 final_event_type=event_type,
-                steps=steps,
+                steps=event.steps,
             ),
         )
 

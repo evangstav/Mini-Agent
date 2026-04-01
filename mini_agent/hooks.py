@@ -25,7 +25,7 @@ class SessionEndPayload(BaseModel):
 
     session_id: str | None = None
     messages: list[Message]
-    final_event_type: str  # "agent_done" or "agent_error"
+    final_event_type: str  # "agent_done", "agent_cancelled", or "agent_error"
     steps: int
     metadata: dict[str, Any] = {}
 
@@ -78,8 +78,10 @@ class HookRegistry:
 
         Callbacks run concurrently via asyncio.gather. Errors in individual
         callbacks are caught and logged (they never crash the agent).
+        The callback list is snapshotted before gather to prevent
+        mutation-during-iteration bugs.
         """
-        callbacks = self._hooks.get(event, [])
+        callbacks = list(self._hooks.get(event, []))
         if not callbacks:
             return
 

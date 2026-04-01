@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Literal
@@ -93,8 +94,10 @@ class MCPServerConnection:
             self.exit_stack = AsyncExitStack()
             async with asyncio.timeout(self.connect_timeout):
                 if self.connection_type == "stdio":
+                    # Augment parent env with configured env vars (don't replace)
+                    merged_env = {**os.environ, **self.env} if self.env else None
                     params = StdioServerParameters(command=self.command, args=self.args,
-                                                   env=self.env if self.env else None)
+                                                   env=merged_env)
                     read_stream, write_stream = await self.exit_stack.enter_async_context(
                         stdio_client(params))
                 elif self.connection_type == "sse":

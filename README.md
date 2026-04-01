@@ -7,12 +7,16 @@ Built on the [MiniMax M2.5](https://www.minimax.io/) model with Anthropic-compat
 ## What It Does
 
 - **Agent loop**: Think → Act → Observe cycle with tool use
-- **Streaming events**: `run_stream()` yields typed events (`TextChunk`, `ToolStart`, `ToolEnd`, etc.)
+- **Streaming events**: `run_stream()` yields typed events (`TextChunk`, `ToolStart`, `ToolEnd`, `AgentCancelled`, etc.)
 - **Tools**: Bash, Read/Write/Edit files, MCP integration
-- **Context management**: Large tool results stored to disk, automatic compaction when context gets large
-- **System prompt injection**: Auto-injects CLAUDE.md and git info
+- **Context management**: Large tool results stored to disk, automatic compaction with COMPACT hook
+- **System prompt injection**: Auto-injects CLAUDE.md, git info, and persistent memory
 - **Two LLM providers**: Anthropic and OpenAI protocols
-- **Permission gating**: Optional callback to approve/deny tool calls
+- **Permission gating**: Typed async callback to approve/deny tool calls
+- **Lifecycle hooks**: SESSION_START, SESSION_END, COMPACT events with async callbacks
+- **Retry with jitter**: Exponential backoff with full jitter to prevent thundering herd
+- **Session persistence**: Save/load conversations with corrupt-file error handling
+- **Timestamps**: All events and messages include UTC timestamps
 
 ## Quick Start
 
@@ -53,7 +57,7 @@ asyncio.run(main())
 ### Streaming Events
 
 ```python
-from mini_agent import TextChunk, ToolStart, ToolEnd, AgentDone
+from mini_agent import TextChunk, ToolStart, ToolEnd, AgentDone, AgentCancelled
 
 async for event in agent.run_stream():
     if isinstance(event, TextChunk):
@@ -62,6 +66,8 @@ async for event in agent.run_stream():
         print(f"\n  -> {event.tool_name}")
     elif isinstance(event, ToolEnd):
         print(f"  <- {'ok' if event.success else event.error}")
+    elif isinstance(event, AgentCancelled):
+        print(f"\nCancelled at step {event.steps}.")
     elif isinstance(event, AgentDone):
         print(f"\nDone in {event.steps} steps.")
 ```
@@ -70,15 +76,20 @@ async for event in agent.run_stream():
 
 ```python
 from mini_agent.context import ToolResultStore, SystemPromptBuilder
+from mini_agent.hooks import HookRegistry
 
 agent = Agent(
     llm_client=client,
     system_prompt="You are a helpful assistant.",
     tools=tools,
-    tool_result_store=ToolResultStore(),   # Persist large results to disk
+    tool_result_store=ToolResultStore(),     # Persist large results to disk
     context_window=200_000,                  # Total context window (tokens)
     compact_threshold_pct=0.85,              # Compact at 85% of context window
-    project_dir=".",                        # Inject CLAUDE.md + git info
+    compaction_reserve=20_000,               # Tokens reserved for summary output
+    project_dir=".",                         # Inject CLAUDE.md + git info
+    permission_callback=my_permission_fn,    # async (tool_name, args) -> bool
+    hooks=HookRegistry(),                    # SESSION_START/END/COMPACT hooks
+    session_id="my-session",                 # Optional session identifier
 )
 ```
 
@@ -106,21 +117,24 @@ client = LLMClient(
 
 ```
 mini_agent/
-├── agent.py          215 LOC  Core loop: run() + run_stream()
-├── context.py        194 LOC  Tool result storage, compaction, system prompt
-├── events.py          74 LOC  Event types for streaming
-├── schema/            55 LOC  Message, ToolCall, LLMResponse
-├── retry.py          138 LOC  Async retry with backoff
+├── agent.py          Core loop: run() + run_stream()
+├── context.py        Tool result storage, compaction, system prompt
+├── events.py         Typed event hierarchy with Literal discriminators
+├── hooks.py          Lifecycle hooks (SESSION_START/END, COMPACT)
+├── schema/           Message (with timestamps), ToolCall, LLMResponse
+├── retry.py          Async retry with exponential backoff + jitter
+├── dream.py          Dream consolidator for persistent memory
+├── tui.py            Interactive REPL with slash commands
 ├── llm/
-│   ├── base.py        84 LOC  Abstract LLM client
-│   ├── llm_wrapper.py 127 LOC Provider router
-│   ├── anthropic_client.py  307 LOC
-│   └── openai_client.py     295 LOC
+│   ├── base.py       Abstract LLM client
+│   ├── llm_wrapper.py Provider router
+│   ├── anthropic_client.py
+│   └── openai_client.py
 └── tools/
-    ├── base.py         55 LOC  Tool + ToolResult
-    ├── bash_tool.py    85 LOC  Shell execution
-    ├── file_tools.py  137 LOC  Read/Write/Edit
-    └── mcp_loader.py  212 LOC  MCP integration
+    ├── base.py        Tool + ToolResult
+    ├── bash_tool.py   Shell execution
+    ├── file_tools.py  Read/Write/Edit
+    └── mcp_loader.py  MCP integration (stdio env merged with parent)
 ```
 
 ## MCP Integration

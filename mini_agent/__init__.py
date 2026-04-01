@@ -3,6 +3,7 @@
 from .agent import Agent
 from .context import SystemPromptBuilder, ToolResultStore, compact_messages, estimate_tokens, extract_handoff_context, prune_tool_results
 from .events import (
+    AgentCancelled,
     AgentDone,
     AgentError,
     AgentEvent,
@@ -19,6 +20,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Agent",
+    "AgentCancelled",
     "AgentDone",
     "AgentError",
     "AgentEvent",

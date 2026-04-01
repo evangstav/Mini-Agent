@@ -13,6 +13,7 @@ Features:
 import asyncio
 import functools
 import logging
+import random
 from typing import Any, Callable, Type, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,11 @@ class RetryConfig:
         self.retryable_exceptions = retryable_exceptions
 
     def calculate_delay(self, attempt: int) -> float:
-        """Calculate delay time (exponential backoff)
+        """Calculate delay time (exponential backoff with jitter).
+
+        Uses "full jitter" strategy: uniform random between 0 and the
+        exponential backoff value. This prevents thundering herd when
+        many clients retry simultaneously.
 
         Args:
             attempt: Current attempt number (starting from 0)
@@ -103,7 +108,8 @@ class RetryConfig:
             Delay time (seconds)
         """
         delay = self.initial_delay * (self.exponential_base**attempt)
-        return min(delay, self.max_delay)
+        capped = min(delay, self.max_delay)
+        return random.uniform(0, capped)  # noqa: S311 — not security-sensitive
 
 
 class RetryExhaustedError(Exception):

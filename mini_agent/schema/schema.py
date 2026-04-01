@@ -1,7 +1,12 @@
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class LLMProvider(str, Enum):
@@ -22,19 +27,20 @@ class ToolCall(BaseModel):
     """Tool call structure."""
 
     id: str
-    type: str  # "function"
+    type: Literal["function"] = "function"
     function: FunctionCall
 
 
 class Message(BaseModel):
     """Chat message."""
 
-    role: str  # "system", "user", "assistant", "tool"
+    role: Literal["system", "user", "assistant", "tool"]
     content: str | list[dict[str, Any]]  # Can be string or list of content blocks
     thinking: str | None = None  # Extended thinking content for assistant messages
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
     name: str | None = None  # For tool role
+    timestamp: datetime = Field(default_factory=_utc_now)
 
 
 class TokenUsage(BaseModel):

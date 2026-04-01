@@ -23,6 +23,7 @@ from .context import ToolResultStore, estimate_tokens
 from .dream import DreamConsolidator
 from .hooks import HookRegistry
 from .events import (
+    AgentCancelled,
     AgentDone,
     AgentError,
     PermissionRequest,
@@ -100,9 +101,26 @@ def save_session(messages: list[Message], path: str) -> None:
 
 
 def load_session(path: str) -> list[Message]:
-    """Load conversation from JSON."""
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    return [Message(**item) for item in raw]
+    """Load conversation from JSON.
+
+    Raises ValueError with a descriptive message if the file contains
+    invalid JSON or messages that don't conform to the Message schema.
+    """
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Corrupt session file (invalid JSON): {e}") from e
+
+    if not isinstance(raw, list):
+        raise ValueError(f"Corrupt session file: expected a JSON array, got {type(raw).__name__}")
+
+    messages: list[Message] = []
+    for i, item in enumerate(raw):
+        try:
+            messages.append(Message(**item))
+        except Exception as e:
+            raise ValueError(f"Corrupt session file: invalid message at index {i}: {e}") from e
+    return messages
 
 
 # ── Cost estimation ───────────────────────────────────────────────────────────
@@ -275,7 +293,7 @@ async def run_tui(
 
         try:
             user_input = await session.prompt_async(
-                "> ",
+                prompt_text,
                 multiline=False,
                 key_bindings=kb,
             )
@@ -332,6 +350,7 @@ async def run_tui(
                         api_base=api_base,
                         model=arg,
                     )
+                    model = arg
                     print(f"{_styled('Model changed to:', GREEN)} {arg}")
                 else:
                     print(f"{_styled('Current model:', DIM)} {model}")
@@ -361,7 +380,11 @@ async def run_tui(
                 if not Path(arg).exists():
                     print(f"{_styled('File not found:', RED)} {arg}")
                     continue
-                agent.messages = load_session(arg)
+                try:
+                    agent.messages = load_session(arg)
+                except ValueError as e:
+                    print(f"{_styled('Error loading session:', RED, BOLD)} {e}")
+                    continue
                 print(f"{_styled('Session loaded from', GREEN)} {arg}")
                 continue
 
@@ -398,6 +421,12 @@ async def run_tui(
 
                 elif isinstance(event, PermissionRequest):
                     pass  # handled by the callback
+
+                elif isinstance(event, AgentCancelled):
+                    if in_text:
+                        print()
+                    elapsed = time.monotonic() - start_time
+                    print(f"\n{_styled(f'Cancelled ({event.steps} steps, {elapsed:.1f}s)', YELLOW)}")
 
                 elif isinstance(event, AgentDone):
                     if in_text:
