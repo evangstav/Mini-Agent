@@ -310,10 +310,14 @@ async def run_tui(
 
     # ── REPL loop ─────────────────────────────────────────────────────────
     while True:
-        # Build prompt with token count
-        token_est = estimate_tokens(agent.messages)
+        # Build prompt with token count — prefer real API counts
+        api_total = agent.token_usage.total_tokens
+        if api_total > 0:
+            token_label = f"{_format_tokens(api_total)} tokens"
+        else:
+            token_label = f"~{_format_tokens(estimate_tokens(agent.messages))} tokens"
         prompt_text = FormattedText([
-            ("class:gray", f"[{_format_tokens(token_est)} tokens] "),
+            ("class:gray", f"[{token_label}] "),
             ("class:prompt", "› "),
         ])
 
@@ -384,13 +388,24 @@ async def run_tui(
 
             if cmd == "/history":
                 turns = len([m for m in agent.messages if m.role in ("user", "assistant")])
-                tokens = estimate_tokens(agent.messages)
-                print(f"{_styled('Turns:', DIM)} {turns}  {_styled('Est. tokens:', DIM)} {_format_tokens(tokens)}")
+                api_total = agent.token_usage.total_tokens
+                if api_total > 0:
+                    print(f"{_styled('Turns:', DIM)} {turns}  {_styled('API tokens:', DIM)} {_format_tokens(api_total)}")
+                else:
+                    tokens = estimate_tokens(agent.messages)
+                    print(f"{_styled('Turns:', DIM)} {turns}  {_styled('Est. tokens:', DIM)} ~{_format_tokens(tokens)}")
                 continue
 
             if cmd == "/cost":
-                tokens = estimate_tokens(agent.messages)
-                print(f"{_styled('Estimated context:', DIM)} {_format_tokens(tokens)} tokens")
+                api_total = agent.token_usage.total_tokens
+                if api_total > 0:
+                    print(f"{_styled('API token usage:', DIM)}")
+                    print(f"  {_styled('Prompt:', DIM)}     {_format_tokens(agent.token_usage.prompt_tokens)}")
+                    print(f"  {_styled('Completion:', DIM)} {_format_tokens(agent.token_usage.completion_tokens)}")
+                    print(f"  {_styled('Total:', DIM)}      {_format_tokens(api_total)}")
+                else:
+                    est = estimate_tokens(agent.messages)
+                    print(f"{_styled('Estimated context:', DIM)} ~{_format_tokens(est)} tokens (no API calls yet)")
                 continue
 
             if cmd == "/save":
@@ -458,7 +473,9 @@ async def run_tui(
                     if in_text:
                         print()
                     elapsed = time.monotonic() - start_time
-                    print(f"\n{_styled(f'Done ({event.steps} steps, {elapsed:.1f}s)', DIM)}")
+                    api_total = agent.token_usage.total_tokens
+                    cost_info = f", {_format_tokens(api_total)} tokens" if api_total > 0 else ""
+                    print(f"\n{_styled(f'Done ({event.steps} steps, {elapsed:.1f}s{cost_info})', DIM)}")
 
                 elif isinstance(event, AgentError):
                     if in_text:
