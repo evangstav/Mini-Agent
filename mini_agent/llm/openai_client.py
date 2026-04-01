@@ -229,7 +229,15 @@ class OpenAIClient(LLMClientBase):
         if message.tool_calls:
             for tool_call in message.tool_calls:
                 # Parse arguments from JSON string
-                arguments = json.loads(tool_call.function.arguments)
+                try:
+                    arguments = json.loads(tool_call.function.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Failed to parse tool arguments for %s: %r",
+                        tool_call.function.name,
+                        tool_call.function.arguments,
+                    )
+                    arguments = {}
 
                 tool_calls.append(
                     ToolCall(
@@ -378,7 +386,11 @@ class OpenAIClient(LLMClientBase):
         tool_calls: list[ToolCall] = []
         for idx in sorted(tool_calls_map):
             entry = tool_calls_map[idx]
-            arguments = json.loads(entry["arguments_buf"]) if entry["arguments_buf"] else {}
+            try:
+                arguments = json.loads(entry["arguments_buf"]) if entry["arguments_buf"] else {}
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Failed to parse streamed tool arguments for %s", entry["name"])
+                arguments = {}
             tool_calls.append(
                 ToolCall(
                     id=entry["id"],

@@ -14,12 +14,16 @@ write access limited to the memory directory.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from .hooks import HookEvent, HookRegistry, SessionEndPayload
 from .schema import Message
+
+logger = logging.getLogger(__name__)
 
 
 # Default location for persistent memories
@@ -35,17 +39,16 @@ You will receive:
 1. Existing memories (may be empty for a fresh project)
 2. The conversation transcript
 
-Your task — produce a JSON object with two keys:
+Your task — produce a JSON object with one key:
 - "updates": list of memory file operations (create, update, or delete)
-- "index_lines": list of one-line index entries for MEMORY.md
 
 Each item in "updates" is an object:
   {"action": "create"|"update"|"delete",
    "filename": "some_memory.md",
    "content": "full file content including frontmatter (for create/update)"}
 
-Each item in "index_lines" is a string like:
-  "- [Title](filename.md) — one-line hook"
+The MEMORY.md index is rebuilt automatically from the memory files — do not \
+include index entries in your response.
 
 Rules:
 - Only save information that will be useful in FUTURE conversations.
@@ -57,7 +60,7 @@ Rules:
 - Keep descriptions under 100 chars — they're used for relevance matching.
 - If existing memories cover the same topic, update them rather than creating duplicates.
 - If a memory is now stale (contradicted by conversation), delete it.
-- If nothing is worth remembering, return {"updates": [], "index_lines": []}.
+- If nothing is worth remembering, return {"updates": []}.
 - Return ONLY valid JSON, no markdown fences or commentary.
 """
 
@@ -77,16 +80,22 @@ class DreamConsolidator:
     ) -> None:
         self.memory_dir = Path(memory_dir)
         self.llm_client = llm_client
+        self._lock = asyncio.Lock()
 
     def register(self, registry: HookRegistry) -> None:
         """Register this consolidator with a hook registry."""
         registry.on(HookEvent.SESSION_END, self.on_session_end)
 
     async def on_session_end(self, payload: SessionEndPayload) -> None:
-        """Hook callback — runs the full dream cycle."""
+        """Hook callback — runs the full dream cycle.
+
+        Uses a lock to prevent concurrent memory file writes when
+        multiple session-end events fire simultaneously.
+        """
         if self.llm_client is None:
             return
-        await self.run(payload.messages, payload.metadata)
+        async with self._lock:
+            await self.run(payload.messages, payload.metadata)
 
     async def run(
         self, messages: list[Message], metadata: dict[str, Any] | None = None
@@ -183,7 +192,7 @@ class DreamConsolidator:
             f"{existing_block}\n\n"
             "## Conversation Transcript\n\n"
             f"{transcript}\n\n"
-            "Produce a JSON object with 'updates' and 'index_lines' as described."
+            "Produce a JSON object with 'updates' as described."
         )
 
         try:

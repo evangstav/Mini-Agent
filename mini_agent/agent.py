@@ -18,7 +18,7 @@ from .events import (
 )
 from .hooks import CompactPayload, HookEvent, HookRegistry, SessionEndPayload, SessionStartPayload
 from .llm import LLMClient
-from .schema import Message
+from .schema import Message, TokenUsage
 from .tools.base import Tool, ToolResult
 
 # Type alias for the permission callback
@@ -74,6 +74,7 @@ class Agent:
         self.hooks = hooks or HookRegistry()
         self.session_id = session_id
         self._running = False
+        self.token_usage = TokenUsage()  # Accumulated token usage from API responses
 
     def add_user_message(self, content: str):
         """Add a user message to history."""
@@ -156,6 +157,12 @@ class Agent:
                     await self._emit_session_end(error_event)
                     yield error_event
                     return
+
+                # Accumulate token usage from API response
+                if response.usage:
+                    self.token_usage.prompt_tokens += response.usage.prompt_tokens
+                    self.token_usage.completion_tokens += response.usage.completion_tokens
+                    self.token_usage.total_tokens += response.usage.total_tokens
 
                 # Record assistant message
                 assistant_msg = Message(

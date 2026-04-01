@@ -17,16 +17,14 @@ _SECRET_PATTERNS = re.compile(
 # Max bytes for stdout/stderr (100 KB)
 _OUTPUT_LIMIT = 100_000
 
-# Commands that should never be executed
+# Commands that should never be executed — destructive or system-level only.
+# chmod and sudo are intentionally allowed for common dev operations.
 _BLOCKED_PATTERNS = [
     re.compile(r"\brm\s+-[^\s]*r[^\s]*f", re.IGNORECASE),  # rm -rf variants
     re.compile(r"\brm\s+-[^\s]*f[^\s]*r", re.IGNORECASE),  # rm -fr variants
     re.compile(r"\bshred\b"),
     re.compile(r"\bmkfs\b"),
     re.compile(r"\bdd\s+.*of=/dev/", re.IGNORECASE),
-    re.compile(r"\bsudo\b"),
-    re.compile(r"\bchmod\b"),
-    re.compile(r"\bkill\s+-9\b"),
     re.compile(r"\bkillall\b"),
 ]
 

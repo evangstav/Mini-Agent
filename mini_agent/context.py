@@ -239,7 +239,7 @@ async def compact_messages(
         summary_text = f"[Prior context: {len(old_turns)} messages omitted due to context limits]"
 
     summary_msg = Message(
-        role="assistant",
+        role="user",
         content=f"[Context summary of {len(old_turns)} earlier messages]:\n{summary_text}",
     )
 
@@ -256,9 +256,17 @@ async def compact_messages(
 class SystemPromptBuilder:
     """Builds system prompt from base prompt, CLAUDE.md, and git info."""
 
-    def __init__(self, base_prompt: str, project_dir: str | None = None):
+    def __init__(
+        self,
+        base_prompt: str,
+        project_dir: str | None = None,
+        memory_budget: int = 4000,
+        instructions_budget: int = 8000,
+    ):
         self.base_prompt = base_prompt
         self.project_dir = project_dir or os.getcwd()
+        self.memory_budget = memory_budget
+        self.instructions_budget = instructions_budget
 
     def build(self) -> str:
         """Assemble the full system prompt."""
@@ -295,7 +303,7 @@ class SystemPromptBuilder:
             return None
 
         sections: list[str] = []
-        char_budget = 4000
+        char_budget = self.memory_budget
         chars_used = 0
 
         # Include the index
@@ -329,7 +337,7 @@ class SystemPromptBuilder:
         Returns merged content or None if no files found.
         """
         sections: list[str] = []
-        char_budget = 8000  # Total budget across all levels
+        char_budget = self.instructions_budget
         chars_used = 0
 
         # Level 1: Global (~/.claude/CLAUDE.md)
