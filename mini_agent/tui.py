@@ -33,10 +33,10 @@ from .events import (
     ToolStart,
 )
 from .llm import LLMClient
-from .sandbox import PermissionMode, Sandbox
 from .schema import LLMProvider, Message
-from .tools.bash_tool import BashKillTool, BashOutputTool, BashTool
+from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
+from .tools.git_tool import GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
 from .tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_async
 from .tools.web_fetch import WebFetchTool
 from .tools.web_search import WebSearchTool
@@ -192,7 +192,6 @@ async def run_tui(
     max_steps: int = 50,
     session_file: str | None = None,
     enable_permissions: bool = True,
-    permission_mode: str = "auto",
 ) -> None:
     """Launch the interactive TUI REPL."""
 
@@ -228,8 +227,11 @@ async def run_tui(
         WriteTool(workspace_dir=workspace),
         EditTool(workspace_dir=workspace),
         BashTool(workspace_dir=workspace),
-        BashOutputTool(),
-        BashKillTool(),
+        GitStatusTool(workspace_dir=workspace),
+        GitDiffTool(workspace_dir=workspace),
+        GitCommitTool(workspace_dir=workspace),
+        GitLogTool(workspace_dir=workspace),
+        GitBranchTool(workspace_dir=workspace),
         WebSearchTool(),
         WebFetchTool(),
     ]
@@ -239,20 +241,8 @@ async def run_tui(
     mcp_tools = await load_mcp_tools_async(mcp_config)
     tools.extend(mcp_tools)
 
-    # Build sandbox from permission mode
-    try:
-        mode = PermissionMode(permission_mode)
-    except ValueError:
-        print(f"{_styled('Error:', RED, BOLD)} Invalid permission mode: {permission_mode}")
-        print(f"Valid modes: auto, readonly, full_access")
-        sys.exit(1)
-
-    sandbox = Sandbox(mode=mode)
-
     perm_mgr = PermissionManager()
-    # In full_access mode, no permission callback needed (sandbox allows everything)
-    # In other modes, the sandbox gates what needs asking, callback handles the prompt
-    perm_cb = perm_mgr.check if mode != PermissionMode.FULL_ACCESS else None
+    perm_cb = perm_mgr.check if enable_permissions else None
 
     default_prompt = system_prompt or (
         "You are a helpful coding assistant. You have access to tools for "
@@ -280,7 +270,6 @@ async def run_tui(
         tool_result_store=tool_result_store,
         project_dir=workspace,
         permission_callback=perm_cb,
-        sandbox=sandbox,
         hooks=hooks,
     )
 
@@ -305,21 +294,16 @@ async def run_tui(
     print(f"\n{_styled('Mini-Agent', BOLD, CYAN)} {_styled('v0.1.0', DIM)}")
     print(f"{_styled('Model:', DIM)} {model}  {_styled('Provider:', DIM)} {provider}")
     print(f"{_styled('Workspace:', DIM)} {workspace}")
-    print(f"{_styled('Sandbox:', DIM)} {mode.value}")
     print(f"{_styled('Type /help for commands. Ctrl+C to cancel. Ctrl+D to exit.', DIM)}\n")
 
     cancel_event = asyncio.Event()
 
     # ── REPL loop ─────────────────────────────────────────────────────────
     while True:
-        # Build prompt with token count — prefer real API counts
-        api_total = agent.token_usage.total_tokens
-        if api_total > 0:
-            token_label = f"{_format_tokens(api_total)} tokens"
-        else:
-            token_label = f"~{_format_tokens(estimate_tokens(agent.messages))} tokens"
+        # Build prompt with token count
+        token_est = estimate_tokens(agent.messages)
         prompt_text = FormattedText([
-            ("class:gray", f"[{token_label}] "),
+            ("class:gray", f"[{_format_tokens(token_est)} tokens] "),
             ("class:prompt", "› "),
         ])
 
@@ -390,24 +374,13 @@ async def run_tui(
 
             if cmd == "/history":
                 turns = len([m for m in agent.messages if m.role in ("user", "assistant")])
-                api_total = agent.token_usage.total_tokens
-                if api_total > 0:
-                    print(f"{_styled('Turns:', DIM)} {turns}  {_styled('API tokens:', DIM)} {_format_tokens(api_total)}")
-                else:
-                    tokens = estimate_tokens(agent.messages)
-                    print(f"{_styled('Turns:', DIM)} {turns}  {_styled('Est. tokens:', DIM)} ~{_format_tokens(tokens)}")
+                tokens = estimate_tokens(agent.messages)
+                print(f"{_styled('Turns:', DIM)} {turns}  {_styled('Est. tokens:', DIM)} {_format_tokens(tokens)}")
                 continue
 
             if cmd == "/cost":
-                api_total = agent.token_usage.total_tokens
-                if api_total > 0:
-                    print(f"{_styled('API token usage:', DIM)}")
-                    print(f"  {_styled('Prompt:', DIM)}     {_format_tokens(agent.token_usage.prompt_tokens)}")
-                    print(f"  {_styled('Completion:', DIM)} {_format_tokens(agent.token_usage.completion_tokens)}")
-                    print(f"  {_styled('Total:', DIM)}      {_format_tokens(api_total)}")
-                else:
-                    est = estimate_tokens(agent.messages)
-                    print(f"{_styled('Estimated context:', DIM)} ~{_format_tokens(est)} tokens (no API calls yet)")
+                tokens = estimate_tokens(agent.messages)
+                print(f"{_styled('Estimated context:', DIM)} {_format_tokens(tokens)} tokens")
                 continue
 
             if cmd == "/save":
@@ -475,9 +448,7 @@ async def run_tui(
                     if in_text:
                         print()
                     elapsed = time.monotonic() - start_time
-                    api_total = agent.token_usage.total_tokens
-                    cost_info = f", {_format_tokens(api_total)} tokens" if api_total > 0 else ""
-                    print(f"\n{_styled(f'Done ({event.steps} steps, {elapsed:.1f}s{cost_info})', DIM)}")
+                    print(f"\n{_styled(f'Done ({event.steps} steps, {elapsed:.1f}s)', DIM)}")
 
                 elif isinstance(event, AgentError):
                     if in_text:
@@ -513,14 +484,8 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=50, help="Max agent steps per turn")
     parser.add_argument("--session", help="Session file to load/resume")
     parser.add_argument("--no-permissions", action="store_true",
-                        help="Disable permission prompts (alias for --permission-mode=full_access)")
-    parser.add_argument("--permission-mode", default="auto",
-                        choices=["auto", "readonly", "full_access"],
-                        help="Permission mode: auto (default), readonly, full_access")
+                        help="Disable permission prompts (auto-allow all tools)")
     args = parser.parse_args()
-
-    # --no-permissions is a shorthand for full_access mode
-    perm_mode = "full_access" if args.no_permissions else args.permission_mode
 
     asyncio.run(run_tui(
         api_key=args.api_key,
@@ -532,5 +497,4 @@ def main() -> None:
         max_steps=args.max_steps,
         session_file=args.session,
         enable_permissions=not args.no_permissions,
-        permission_mode=perm_mode,
     ))

@@ -33,8 +33,9 @@ from .events import (
 )
 from .llm import LLMClient
 from .schema import LLMProvider, Message
-from .tools.bash_tool import BashKillTool, BashOutputTool, BashTool
+from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
+from .tools.git_tool import GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
 
 # ── ANSI helpers ──────────────────────────────────────────────────────────────
 
@@ -205,8 +206,11 @@ async def run_tui(
         WriteTool(workspace_dir=workspace),
         EditTool(workspace_dir=workspace),
         BashTool(workspace_dir=workspace),
-        BashOutputTool(),
-        BashKillTool(),
+        GitStatusTool(workspace_dir=workspace),
+        GitDiffTool(workspace_dir=workspace),
+        GitCommitTool(workspace_dir=workspace),
+        GitLogTool(workspace_dir=workspace),
+        GitBranchTool(workspace_dir=workspace),
     ]
 
     perm_mgr = PermissionManager()
@@ -268,14 +272,10 @@ async def run_tui(
 
     # ── REPL loop ─────────────────────────────────────────────────────────
     while True:
-        # Build prompt with token count — prefer real API counts
-        api_total = agent.token_usage.total_tokens
-        if api_total > 0:
-            token_label = f"{_format_tokens(api_total)} tokens"
-        else:
-            token_label = f"~{_format_tokens(estimate_tokens(agent.messages))} tokens"
+        # Build prompt with token count
+        token_est = estimate_tokens(agent.messages)
         prompt_text = FormattedText([
-            ("class:gray", f"[{token_label}] "),
+            ("class:gray", f"[{_format_tokens(token_est)} tokens] "),
             ("class:prompt", "› "),
         ])
 
@@ -345,24 +345,13 @@ async def run_tui(
 
             if cmd == "/history":
                 turns = len([m for m in agent.messages if m.role in ("user", "assistant")])
-                api_total = agent.token_usage.total_tokens
-                if api_total > 0:
-                    print(f"{_styled('Turns:', DIM)} {turns}  {_styled('API tokens:', DIM)} {_format_tokens(api_total)}")
-                else:
-                    tokens = estimate_tokens(agent.messages)
-                    print(f"{_styled('Turns:', DIM)} {turns}  {_styled('Est. tokens:', DIM)} ~{_format_tokens(tokens)}")
+                tokens = estimate_tokens(agent.messages)
+                print(f"{_styled('Turns:', DIM)} {turns}  {_styled('Est. tokens:', DIM)} {_format_tokens(tokens)}")
                 continue
 
             if cmd == "/cost":
-                api_total = agent.token_usage.total_tokens
-                if api_total > 0:
-                    print(f"{_styled('API token usage:', DIM)}")
-                    print(f"  {_styled('Prompt:', DIM)}     {_format_tokens(agent.token_usage.prompt_tokens)}")
-                    print(f"  {_styled('Completion:', DIM)} {_format_tokens(agent.token_usage.completion_tokens)}")
-                    print(f"  {_styled('Total:', DIM)}      {_format_tokens(api_total)}")
-                else:
-                    est = estimate_tokens(agent.messages)
-                    print(f"{_styled('Estimated context:', DIM)} ~{_format_tokens(est)} tokens (no API calls yet)")
+                tokens = estimate_tokens(agent.messages)
+                print(f"{_styled('Estimated context:', DIM)} {_format_tokens(tokens)} tokens")
                 continue
 
             if cmd == "/save":
@@ -420,9 +409,7 @@ async def run_tui(
                     if in_text:
                         print()
                     elapsed = time.monotonic() - start_time
-                    api_total = agent.token_usage.total_tokens
-                    cost_info = f", {_format_tokens(api_total)} tokens" if api_total > 0 else ""
-                    print(f"\n{_styled(f'Done ({event.steps} steps, {elapsed:.1f}s{cost_info})', DIM)}")
+                    print(f"\n{_styled(f'Done ({event.steps} steps, {elapsed:.1f}s)', DIM)}")
 
                 elif isinstance(event, AgentError):
                     if in_text:
