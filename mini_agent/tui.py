@@ -172,14 +172,23 @@ async def run_tui(
     """Launch the interactive TUI REPL."""
 
     # ── Resolve config ────────────────────────────────────────────────────
-    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("MINIMAX_API_KEY") or ""
+    # Auto-detect provider from available API keys
+    minimax_key = os.environ.get("MINIMAX_API_KEY", "")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = api_key or minimax_key or anthropic_key or ""
     if not api_key:
-        print(f"{_styled('Error:', RED, BOLD)} Set ANTHROPIC_API_KEY or MINIMAX_API_KEY environment variable.")
+        print(f"{_styled('Error:', RED, BOLD)} Set MINIMAX_API_KEY or ANTHROPIC_API_KEY environment variable.")
         sys.exit(1)
 
+    # Default to MiniMax if MINIMAX_API_KEY is set, otherwise Anthropic
+    is_minimax = bool(minimax_key) and api_key == minimax_key
     provider_enum = LLMProvider(provider)
-    model = model or os.environ.get("MINI_AGENT_MODEL") or "claude-sonnet-4-20250514"
-    api_base = api_base or os.environ.get("MINI_AGENT_API_BASE") or "https://api.anthropic.com"
+    model = model or os.environ.get("MINI_AGENT_MODEL") or (
+        "MiniMax-M2.7" if is_minimax else "claude-sonnet-4-20250514"
+    )
+    api_base = api_base or os.environ.get("MINI_AGENT_API_BASE") or (
+        "https://api.minimax.io" if is_minimax else "https://api.anthropic.com"
+    )
     workspace = workspace or os.getcwd()
 
     llm_client = LLMClient(
@@ -407,7 +416,7 @@ def main() -> None:
     parser.add_argument("--api-key", help="API key (or set ANTHROPIC_API_KEY / MINIMAX_API_KEY)")
     parser.add_argument("--provider", default="anthropic", choices=["anthropic", "openai"],
                         help="LLM provider (default: anthropic)")
-    parser.add_argument("--model", help="Model name (default: claude-sonnet-4-20250514)")
+    parser.add_argument("--model", help="Model name (default: MiniMax-M2.7 or claude-sonnet-4-20250514)")
     parser.add_argument("--api-base", help="API base URL")
     parser.add_argument("--workspace", "-w", help="Working directory (default: cwd)")
     parser.add_argument("--system-prompt", help="Custom system prompt text")
