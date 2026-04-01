@@ -66,6 +66,30 @@ class AgentDone(AgentEvent):
     steps: int
 
 
+class SubAgentSpawn(AgentEvent):
+    """A sub-agent was forked from the parent agent."""
+
+    type: str = "sub_agent_spawn"
+    agent_id: str
+    task: str
+
+
+class SubAgentDone(AgentEvent):
+    """A sub-agent completed its task."""
+
+    type: str = "sub_agent_done"
+    agent_id: str
+    result: str
+
+
+class SubAgentError(AgentEvent):
+    """A sub-agent encountered an error."""
+
+    type: str = "sub_agent_error"
+    agent_id: str
+    error: str
+
+
 class AgentError(AgentEvent):
     """Agent encountered an error."""
 

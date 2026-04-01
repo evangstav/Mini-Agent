@@ -1,6 +1,7 @@
 """Core Agent implementation — generator-based event-driven loop."""
 
 import asyncio
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Optional
 
@@ -10,6 +11,9 @@ from .events import (
     AgentError,
     AgentEvent,
     PermissionRequest,
+    SubAgentDone,
+    SubAgentError,
+    SubAgentSpawn,
     TextChunk,
     ThinkingChunk,
     ToolEnd,
@@ -220,6 +224,130 @@ class Agent:
             elif isinstance(event, AgentError):
                 return event.error
         return ""
+
+    def fork(
+        self,
+        task: str,
+        tools: list[Tool] | None = None,
+        max_steps: int | None = None,
+    ) -> "Agent":
+        """Fork this agent to run a sub-task with shared prompt cache prefix.
+
+        Creates a new Agent sharing the same system prompt (byte-identical for
+        cache hits on providers that support prompt caching) and LLM client,
+        but with cloned message history for isolated mutable state.
+
+        Args:
+            task: User message describing the sub-task.
+            tools: Optional tool list override; defaults to parent's tools.
+            max_steps: Optional max steps override; defaults to parent's value.
+
+        Returns:
+            A new Agent ready to execute via run() or run_stream().
+        """
+        forked = Agent.__new__(Agent)
+        # Share immutable/stateless references for cache alignment
+        forked.llm = self.llm
+        forked.system_prompt = self.system_prompt
+        forked.tools = dict(self.tools) if tools is None else {t.name: t for t in tools}
+        forked.max_steps = max_steps if max_steps is not None else self.max_steps
+        forked.tool_result_store = self.tool_result_store
+        forked.compact_threshold = self.compact_threshold
+        forked.context_window = self.context_window
+        forked.compact_threshold_pct = self.compact_threshold_pct
+        forked.compaction_reserve = self.compaction_reserve
+        forked._permission_callback = self._permission_callback
+
+        # Clone message history — deep copy so mutations are isolated
+        forked.messages = [msg.model_copy(deep=True) for msg in self.messages]
+
+        # Add the sub-task
+        forked.add_user_message(task)
+        return forked
+
+    async def run_forked(
+        self,
+        tasks: list[str],
+        tools: list[Tool] | None = None,
+        max_steps: int | None = None,
+    ) -> list[tuple[str, str]]:
+        """Run multiple sub-tasks in parallel via forked agents.
+
+        Each task gets its own forked agent sharing this agent's prompt cache
+        prefix. All forks run concurrently via asyncio.gather.
+
+        Args:
+            tasks: List of task descriptions (one sub-agent per task).
+            tools: Optional tool list override for all forks.
+            max_steps: Optional max steps override for all forks.
+
+        Returns:
+            List of (agent_id, result) tuples in the same order as tasks.
+        """
+        agents: list[tuple[str, "Agent"]] = []
+        for task in tasks:
+            agent_id = uuid.uuid4().hex[:8]
+            forked = self.fork(task, tools=tools, max_steps=max_steps)
+            agents.append((agent_id, forked))
+
+        async def _run_one(agent_id: str, agent: "Agent") -> tuple[str, str]:
+            result = await agent.run()
+            return (agent_id, result)
+
+        results = await asyncio.gather(
+            *[_run_one(aid, a) for aid, a in agents],
+            return_exceptions=True,
+        )
+
+        out: list[tuple[str, str]] = []
+        for i, r in enumerate(results):
+            agent_id = agents[i][0]
+            if isinstance(r, BaseException):
+                out.append((agent_id, f"Sub-agent error: {r}"))
+            else:
+                out.append(r)
+        return out
+
+    async def run_forked_stream(
+        self,
+        tasks: list[str],
+        tools: list[Tool] | None = None,
+        max_steps: int | None = None,
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """Run multiple sub-tasks in parallel, yielding lifecycle events.
+
+        Yields SubAgentSpawn when each fork starts, SubAgentDone/SubAgentError
+        when each completes. Useful for observability in streaming UIs.
+
+        Args:
+            tasks: List of task descriptions.
+            tools: Optional tool list override.
+            max_steps: Optional max steps override.
+        """
+        agents: list[tuple[str, "Agent"]] = []
+        for task in tasks:
+            agent_id = uuid.uuid4().hex[:8]
+            forked = self.fork(task, tools=tools, max_steps=max_steps)
+            agents.append((agent_id, forked))
+
+        # Emit spawn events
+        for i, (agent_id, _) in enumerate(agents):
+            yield SubAgentSpawn(agent_id=agent_id, task=tasks[i])
+
+        async def _run_one(agent_id: str, agent: "Agent") -> tuple[str, str]:
+            return (agent_id, await agent.run())
+
+        results = await asyncio.gather(
+            *[_run_one(aid, a) for aid, a in agents],
+            return_exceptions=True,
+        )
+
+        for i, r in enumerate(results):
+            agent_id = agents[i][0]
+            if isinstance(r, BaseException):
+                yield SubAgentError(agent_id=agent_id, error=str(r))
+            else:
+                yield SubAgentDone(agent_id=r[0], result=r[1])
 
     def get_history(self) -> list[Message]:
         """Get message history."""
