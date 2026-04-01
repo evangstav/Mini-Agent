@@ -12,6 +12,7 @@ from mini_agent.context import (
     compact_messages,
     compute_compact_threshold,
     estimate_tokens,
+    extract_handoff_context,
 )
 from mini_agent.schema import LLMResponse, Message
 
@@ -226,3 +227,155 @@ class TestSystemPromptBuilder:
         prompt = builder.build()
         # Should include git info since we're in a repo
         assert "Branch:" in prompt or "Git Context" not in prompt
+
+
+# --- Handoff Context Extraction ---
+
+
+@pytest.mark.asyncio
+async def test_handoff_extracts_relevant_context():
+    """Handoff extracts relevant context from prior conversation."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.return_value = LLMResponse(
+        content="- File `src/auth.py` has OAuth token refresh logic\n- Uses Redis for session storage",
+        finish_reason="stop",
+    )
+
+    messages = [
+        Message(role="system", content="You are a coding assistant."),
+        Message(role="user", content="Fix the OAuth bug in src/auth.py"),
+        Message(role="assistant", content="I found the issue in the token refresh logic."),
+        Message(role="user", content="Also check the Redis session store."),
+        Message(role="assistant", content="Redis sessions are working correctly."),
+    ]
+
+    result = await extract_handoff_context(
+        messages, "Add rate limiting to the auth endpoint", mock_llm
+    )
+
+    # Should have: system + extracted context + new goal
+    assert result[0].role == "system"
+    assert result[0].content == "You are a coding assistant."
+    assert "Relevant context from prior conversation" in result[1].content
+    assert "src/auth.py" in result[1].content
+    assert result[-1].content == "Add rate limiting to the auth endpoint"
+    assert len(result) == 3
+
+
+@pytest.mark.asyncio
+async def test_handoff_no_relevant_context():
+    """When LLM says nothing is relevant, only system + goal are returned."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.return_value = LLMResponse(
+        content="NO_RELEVANT_CONTEXT", finish_reason="stop"
+    )
+
+    messages = [
+        Message(role="system", content="sys"),
+        Message(role="user", content="unrelated topic"),
+        Message(role="assistant", content="unrelated answer"),
+    ]
+
+    result = await extract_handoff_context(messages, "Build a new feature", mock_llm)
+
+    assert len(result) == 2
+    assert result[0].role == "system"
+    assert result[1].content == "Build a new feature"
+
+
+@pytest.mark.asyncio
+async def test_handoff_empty_conversation():
+    """With no prior conversation, returns system + goal."""
+    mock_llm = AsyncMock()
+
+    messages = [Message(role="system", content="sys")]
+    result = await extract_handoff_context(messages, "Do something", mock_llm)
+
+    assert len(result) == 2
+    assert result[0].content == "sys"
+    assert result[1].content == "Do something"
+    # LLM should not have been called
+    mock_llm.generate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handoff_custom_system_prompt():
+    """Custom system prompt overrides the original."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.return_value = LLMResponse(
+        content="- relevant info", finish_reason="stop"
+    )
+
+    messages = [
+        Message(role="system", content="Old system prompt"),
+        Message(role="user", content="prior work"),
+        Message(role="assistant", content="prior response"),
+    ]
+
+    result = await extract_handoff_context(
+        messages, "New task", mock_llm, system_prompt="New system prompt"
+    )
+
+    assert result[0].content == "New system prompt"
+
+
+@pytest.mark.asyncio
+async def test_handoff_llm_failure_returns_fresh_thread():
+    """If extraction LLM fails, returns system + goal without context."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.side_effect = Exception("API error")
+
+    messages = [
+        Message(role="system", content="sys"),
+        Message(role="user", content="prior work"),
+        Message(role="assistant", content="prior response"),
+    ]
+
+    result = await extract_handoff_context(messages, "New task", mock_llm)
+
+    assert len(result) == 2
+    assert result[0].content == "sys"
+    assert result[1].content == "New task"
+
+
+@pytest.mark.asyncio
+async def test_handoff_truncates_long_extraction():
+    """Extracted context is truncated to max_context_chars."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.return_value = LLMResponse(
+        content="x" * 5000, finish_reason="stop"
+    )
+
+    messages = [
+        Message(role="system", content="sys"),
+        Message(role="user", content="prior"),
+        Message(role="assistant", content="response"),
+    ]
+
+    result = await extract_handoff_context(
+        messages, "goal", mock_llm, max_context_chars=100
+    )
+
+    context_msg = result[1]
+    assert "context truncated" in context_msg.content
+    # The content prefix + 100 chars of extraction + truncation notice
+    assert len(context_msg.content) < 300
+
+
+@pytest.mark.asyncio
+async def test_handoff_no_system_message_uses_default():
+    """If no system message in history, uses a default."""
+    mock_llm = AsyncMock()
+    mock_llm.generate.return_value = LLMResponse(
+        content="NO_RELEVANT_CONTEXT", finish_reason="stop"
+    )
+
+    messages = [
+        Message(role="user", content="question"),
+        Message(role="assistant", content="answer"),
+    ]
+
+    result = await extract_handoff_context(messages, "New task", mock_llm)
+
+    assert result[0].role == "system"
+    assert result[0].content == "You are a helpful assistant."

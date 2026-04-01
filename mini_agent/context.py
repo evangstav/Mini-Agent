@@ -380,3 +380,116 @@ class SystemPromptBuilder:
             return "\n".join(parts)
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return None
+
+
+# --- Handoff Context Extraction ---
+
+
+async def extract_handoff_context(
+    messages: list[Message],
+    new_goal: str,
+    llm_client: Any,
+    system_prompt: str | None = None,
+    max_context_chars: int = 12_000,
+) -> list[Message]:
+    """Extract relevant context from a prior conversation for a new task.
+
+    Instead of carrying forward the entire conversation (context pollution)
+    or summarizing everything (lossy), this uses an LLM to selectively extract
+    only the context relevant to the new goal.
+
+    Args:
+        messages: Prior conversation history.
+        new_goal: Description of the new task/goal.
+        llm_client: LLM client for extraction (can be a cheaper/faster model).
+        system_prompt: Optional system prompt for the new thread. If None,
+            the system prompt from the prior conversation is reused.
+        max_context_chars: Budget for extracted context (default 12K chars ~3K tokens).
+
+    Returns:
+        Fresh message list: [system_prompt, extracted_context (user), new_goal (user)].
+        If extraction fails, returns [system_prompt, new_goal] with no prior context.
+    """
+    # Preserve original system prompt
+    original_system = None
+    conversation: list[Message] = []
+    for msg in messages:
+        if msg.role == "system" and original_system is None:
+            original_system = msg
+        else:
+            conversation.append(msg)
+
+    effective_system = (
+        Message(role="system", content=system_prompt)
+        if system_prompt
+        else original_system
+        or Message(role="system", content="You are a helpful assistant.")
+    )
+
+    # If no conversation history, just return system + goal
+    if not conversation:
+        return [effective_system, Message(role="user", content=new_goal)]
+
+    # Build a digest of the prior conversation for the extractor
+    digest_parts: list[str] = []
+    char_budget = max_context_chars * 3  # Allow extractor to see ~3x what it outputs
+    chars_used = 0
+    for msg in conversation:
+        content = msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
+        # Truncate individual messages to avoid one huge tool result dominating
+        if len(content) > 2000:
+            content = content[:2000] + "..."
+        line = f"[{msg.role}]: {content}"
+        if chars_used + len(line) > char_budget:
+            digest_parts.append("[... earlier messages omitted for brevity ...]")
+            break
+        digest_parts.append(line)
+        chars_used += len(line)
+
+    conversation_digest = "\n".join(digest_parts)
+
+    extraction_prompt = (
+        "You are a context extraction assistant. Given a prior conversation and a new goal, "
+        "extract ONLY the information from the prior conversation that is relevant to the new goal.\n\n"
+        "Rules:\n"
+        "- Include: file paths, code snippets, decisions, constraints, error messages, "
+        "and architectural context that the new task needs.\n"
+        "- Exclude: completed work unrelated to the new goal, debugging dead-ends, "
+        "social pleasantries, and tool outputs that aren't referenced.\n"
+        "- Be concise. Use bullet points. Preserve exact values (paths, names, numbers).\n"
+        "- If nothing from the prior conversation is relevant, respond with exactly: "
+        '"NO_RELEVANT_CONTEXT"\n\n'
+        f"## New Goal\n{new_goal}\n\n"
+        f"## Prior Conversation\n{conversation_digest}\n\n"
+        "## Extracted Context\n"
+        "Extract only what's relevant to the new goal:"
+    )
+
+    try:
+        response = await llm_client.generate(
+            messages=[
+                Message(role="system", content="You extract relevant context from conversations. Be precise and concise."),
+                Message(role="user", content=extraction_prompt),
+            ]
+        )
+        extracted = response.content.strip()
+    except Exception:
+        # Extraction failed — start fresh with just the goal
+        return [effective_system, Message(role="user", content=new_goal)]
+
+    # Build the fresh thread
+    result = [effective_system]
+
+    if extracted and extracted != "NO_RELEVANT_CONTEXT":
+        # Enforce max_context_chars on the extraction output
+        if len(extracted) > max_context_chars:
+            extracted = extracted[:max_context_chars] + "\n[... context truncated]"
+        result.append(
+            Message(
+                role="user",
+                content=f"[Relevant context from prior conversation]:\n{extracted}",
+            )
+        )
+
+    result.append(Message(role="user", content=new_goal))
+    return result
