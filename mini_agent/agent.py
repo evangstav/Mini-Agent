@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+from .audit import AuditLogger
 from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold
 from .events import (
     AgentCancelled,
@@ -82,6 +83,7 @@ class Agent:
         self.session_id = session_id
         self._running = False
         self.token_usage = TokenUsage()  # Accumulated token usage from API responses
+        self._audit = AuditLogger(session_id) if session_id else None
 
     def add_user_message(self, content: str):
         """Add a user message to history."""
@@ -293,6 +295,8 @@ class Agent:
                         tool_name=function_name,
                         arguments=arguments,
                     )
+                    if self._audit:
+                        self._audit.tool_start(tool_call_id, function_name, arguments)
                     tool_tasks.append((tool_call_id, function_name, arguments))
 
                 # Execute permitted tool calls in parallel
@@ -313,6 +317,7 @@ class Agent:
                         *(_execute_tool(tc_id, fn, args) for tc_id, fn, args in tool_tasks)
                     )
 
+                    args_by_id = {tc_id: args for tc_id, _, args in tool_tasks}
                     for tool_call_id, function_name, result in results:
                         # Store large results to disk if configured
                         content = result.content if result.success else f"Error: {result.error}"
@@ -326,6 +331,16 @@ class Agent:
                             content=content if result.success else "",
                             error=result.error,
                         )
+                        if self._audit:
+                            self._audit.tool_end(
+                                tool_call_id,
+                                function_name,
+                                success=result.success,
+                                result_summary=content if result.success else (result.error or ""),
+                                error=result.error,
+                                token_usage=self.token_usage.model_dump(),
+                                arguments=args_by_id.get(tool_call_id),
+                            )
 
                         self.messages.append(
                             Message(
@@ -437,6 +452,8 @@ class Agent:
                     continue
 
             yield ToolStart(tool_call_id=tc_id, tool_name=fn_name, arguments=args)
+            if self._audit:
+                self._audit.tool_start(tc_id, fn_name, args)
             tool_tasks.append((tc_id, fn_name, args))
 
         async def _exec(tc_id: str, fn_name: str, args: dict) -> tuple[str, str, ToolResult]:
@@ -448,16 +465,29 @@ class Agent:
                 return tc_id, fn_name, ToolResult(success=False, content="", error=f"Tool execution failed: {e}")
 
         if tool_tasks:
+            args_by_id = {tc_id: args for tc_id, _, args in tool_tasks}
             results = await asyncio.gather(*(_exec(tc_id, fn, args) for tc_id, fn, args in tool_tasks))
             for tc_id, fn_name, result in results:
                 content = result.content if result.success else f"Error: {result.error}"
                 if self.tool_result_store and result.success:
                     content = self.tool_result_store.store_if_large(content, tc_id)
                 yield ToolEnd(tool_call_id=tc_id, tool_name=fn_name, success=result.success, content=content if result.success else "", error=result.error)
+                if self._audit:
+                    self._audit.tool_end(
+                        tc_id,
+                        fn_name,
+                        success=result.success,
+                        result_summary=content if result.success else (result.error or ""),
+                        error=result.error,
+                        token_usage=self.token_usage.model_dump(),
+                        arguments=args_by_id.get(tc_id),
+                    )
                 self.messages.append(Message(role="tool", content=content, tool_call_id=tc_id, name=fn_name))
 
     async def _emit_session_end(self, event: AgentDone | AgentCancelled | AgentError) -> None:
-        """Emit SESSION_END hook with the conversation history."""
+        """Emit SESSION_END hook and close the audit log."""
+        if self._audit:
+            self._audit.close()
         if isinstance(event, AgentCancelled):
             event_type = "agent_cancelled"
         elif isinstance(event, AgentDone):
