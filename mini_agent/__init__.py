@@ -14,6 +14,7 @@ from .events import (
     ToolStart,
 )
 from .llm import LLMClient
+from .sandbox import Decision, PermissionMode, Sandbox
 from .schema import FunctionCall, LLMProvider, LLMResponse, Message, ToolCall
 
 __version__ = "0.1.0"
@@ -27,6 +28,9 @@ __all__ = [
     "LLMClient",
     "LLMProvider",
     "Message",
+    "PermissionMode",
+    "Sandbox",
+    "Decision",
     "LLMResponse",
     "PermissionRequest",
     "TextChunk",

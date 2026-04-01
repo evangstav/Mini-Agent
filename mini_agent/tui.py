@@ -33,6 +33,7 @@ from .events import (
     ToolStart,
 )
 from .llm import LLMClient
+from .sandbox import PermissionMode, Sandbox
 from .schema import LLMProvider, Message
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
@@ -191,6 +192,7 @@ async def run_tui(
     max_steps: int = 50,
     session_file: str | None = None,
     enable_permissions: bool = True,
+    permission_mode: str = "auto",
 ) -> None:
     """Launch the interactive TUI REPL."""
 
@@ -235,8 +237,20 @@ async def run_tui(
     mcp_tools = await load_mcp_tools_async(mcp_config)
     tools.extend(mcp_tools)
 
+    # Build sandbox from permission mode
+    try:
+        mode = PermissionMode(permission_mode)
+    except ValueError:
+        print(f"{_styled('Error:', RED, BOLD)} Invalid permission mode: {permission_mode}")
+        print(f"Valid modes: auto, readonly, full_access")
+        sys.exit(1)
+
+    sandbox = Sandbox(mode=mode)
+
     perm_mgr = PermissionManager()
-    perm_cb = perm_mgr.check if enable_permissions else None
+    # In full_access mode, no permission callback needed (sandbox allows everything)
+    # In other modes, the sandbox gates what needs asking, callback handles the prompt
+    perm_cb = perm_mgr.check if mode != PermissionMode.FULL_ACCESS else None
 
     default_prompt = system_prompt or (
         "You are a helpful coding assistant. You have access to tools for "
@@ -264,6 +278,7 @@ async def run_tui(
         tool_result_store=tool_result_store,
         project_dir=workspace,
         permission_callback=perm_cb,
+        sandbox=sandbox,
         hooks=hooks,
     )
 
@@ -288,6 +303,7 @@ async def run_tui(
     print(f"\n{_styled('Mini-Agent', BOLD, CYAN)} {_styled('v0.1.0', DIM)}")
     print(f"{_styled('Model:', DIM)} {model}  {_styled('Provider:', DIM)} {provider}")
     print(f"{_styled('Workspace:', DIM)} {workspace}")
+    print(f"{_styled('Sandbox:', DIM)} {mode.value}")
     print(f"{_styled('Type /help for commands. Ctrl+C to cancel. Ctrl+D to exit.', DIM)}\n")
 
     cancel_event = asyncio.Event()
@@ -478,8 +494,14 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=50, help="Max agent steps per turn")
     parser.add_argument("--session", help="Session file to load/resume")
     parser.add_argument("--no-permissions", action="store_true",
-                        help="Disable permission prompts (auto-allow all tools)")
+                        help="Disable permission prompts (alias for --permission-mode=full_access)")
+    parser.add_argument("--permission-mode", default="auto",
+                        choices=["auto", "readonly", "full_access"],
+                        help="Permission mode: auto (default), readonly, full_access")
     args = parser.parse_args()
+
+    # --no-permissions is a shorthand for full_access mode
+    perm_mode = "full_access" if args.no_permissions else args.permission_mode
 
     asyncio.run(run_tui(
         api_key=args.api_key,
@@ -491,4 +513,5 @@ def main() -> None:
         max_steps=args.max_steps,
         session_file=args.session,
         enable_permissions=not args.no_permissions,
+        permission_mode=perm_mode,
     ))

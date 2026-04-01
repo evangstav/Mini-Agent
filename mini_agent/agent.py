@@ -18,6 +18,7 @@ from .events import (
 )
 from .hooks import CompactPayload, HookEvent, HookRegistry, SessionEndPayload, SessionStartPayload
 from .llm import LLMClient
+from .sandbox import Decision, PermissionMode, Sandbox
 from .schema import Message, TokenUsage
 from .tools.base import Tool, ToolResult
 
@@ -46,6 +47,7 @@ class Agent:
         compaction_reserve: int = 20_000,
         project_dir: str | None = None,
         permission_callback: PermissionCallbackType | None = None,
+        sandbox: Sandbox | None = None,
         hooks: HookRegistry | None = None,
         session_id: str | None = None,
     ):
@@ -71,6 +73,7 @@ class Agent:
         self.system_prompt = system_prompt
         self.messages: list[Message] = [Message(role="system", content=system_prompt)]
         self._permission_callback = permission_callback
+        self.sandbox = sandbox or Sandbox(PermissionMode.AUTO)
         self.hooks = hooks or HookRegistry()
         self.session_id = session_id
         self._running = False
@@ -191,8 +194,34 @@ class Agent:
                     function_name = tool_call.function.name
                     arguments = tool_call.function.arguments
 
-                    # Permission gating (serial — requires user interaction)
-                    if self._permission_callback is not None:
+                    # Sandbox decision
+                    decision = self.sandbox.check(function_name, arguments)
+
+                    if decision == Decision.DENY:
+                        denied_result = ToolResult(
+                            success=False,
+                            content="",
+                            error=f"Tool blocked by sandbox ({self.sandbox.mode.value} mode): {function_name}",
+                        )
+                        permission_denied[tool_call_id] = denied_result
+                        yield ToolEnd(
+                            tool_call_id=tool_call_id,
+                            tool_name=function_name,
+                            success=False,
+                            content="",
+                            error=denied_result.error,
+                        )
+                        self.messages.append(
+                            Message(
+                                role="tool",
+                                content=f"Error: {denied_result.error}",
+                                tool_call_id=tool_call_id,
+                                name=function_name,
+                            )
+                        )
+                        continue
+
+                    if decision == Decision.ASK and self._permission_callback is not None:
                         yield PermissionRequest(
                             tool_call_id=tool_call_id,
                             tool_name=function_name,
