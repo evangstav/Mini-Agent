@@ -70,17 +70,49 @@ def estimate_tokens(messages: list[Message]) -> int:
 
 # --- Context Compaction ---
 
+def compute_compact_threshold(
+    context_window: int = 200_000,
+    compact_threshold_pct: float = 0.85,
+    compaction_reserve: int = 20_000,
+) -> int:
+    """Compute the absolute token threshold for compaction.
+
+    Args:
+        context_window: Total context window size in tokens (e.g. 200_000).
+        compact_threshold_pct: Fraction of context window at which to trigger
+            compaction. Should be 0.85–0.90; 0.95 triggers too late.
+        compaction_reserve: Tokens reserved for the compaction summary output.
+
+    Returns:
+        Effective token threshold (context_window * pct - reserve).
+    """
+    return int(context_window * compact_threshold_pct) - compaction_reserve
+
+
 async def compact_messages(
     messages: list[Message],
     llm_client: Any,
-    token_threshold: int = 80_000,
+    token_threshold: int | None = None,
     keep_recent: int = 6,
+    *,
+    context_window: int = 200_000,
+    compact_threshold_pct: float = 0.85,
+    compaction_reserve: int = 20_000,
 ) -> list[Message]:
     """Summarize older turns when estimated tokens exceed threshold.
+
+    The threshold is percentage-based by default: 85% of the context window
+    minus a reserve for the compaction summary itself. An explicit
+    ``token_threshold`` overrides the percentage calculation.
 
     Keeps the system message, a summary of old turns, and the most recent turns.
     Returns a new message list (does not mutate the original).
     """
+    if token_threshold is None:
+        token_threshold = compute_compact_threshold(
+            context_window, compact_threshold_pct, compaction_reserve
+        )
+
     current_tokens = estimate_tokens(messages)
     if current_tokens < token_threshold:
         return messages

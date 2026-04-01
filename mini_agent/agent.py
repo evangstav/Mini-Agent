@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import Optional
 
-from .context import SystemPromptBuilder, ToolResultStore, compact_messages
+from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold
 from .events import (
     AgentDone,
     AgentError,
@@ -35,7 +35,10 @@ class Agent:
         tools: list[Tool],
         max_steps: int = 50,
         tool_result_store: ToolResultStore | None = None,
-        compact_threshold: int = 80_000,
+        compact_threshold: int | None = None,
+        context_window: int = 200_000,
+        compact_threshold_pct: float = 0.85,
+        compaction_reserve: int = 20_000,
         project_dir: str | None = None,
         permission_callback: object = None,
     ):
@@ -43,7 +46,15 @@ class Agent:
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
         self.tool_result_store = tool_result_store
-        self.compact_threshold = compact_threshold
+        self.context_window = context_window
+        self.compact_threshold_pct = compact_threshold_pct
+        self.compaction_reserve = compaction_reserve
+        # Explicit threshold overrides percentage calculation
+        self.compact_threshold = (
+            compact_threshold
+            if compact_threshold is not None
+            else compute_compact_threshold(context_window, compact_threshold_pct, compaction_reserve)
+        )
 
         # Build system prompt with CLAUDE.md and git info if project_dir given
         if project_dir:
