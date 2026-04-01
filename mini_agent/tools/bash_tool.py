@@ -1,11 +1,54 @@
 """Shell command execution tool."""
 
 import asyncio
+import os
 import platform
 import re
 from typing import Any
 
 from .base import Tool, ToolResult
+
+# Env var names that likely contain secrets — stripped from subprocess env
+_SECRET_PATTERNS = re.compile(
+    r"(API_KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|PRIVATE_KEY|AUTH)",
+    re.IGNORECASE,
+)
+
+# Max bytes for stdout/stderr (100 KB)
+_OUTPUT_LIMIT = 100_000
+
+# Commands that should never be executed
+_BLOCKED_PATTERNS = [
+    re.compile(r"\brm\s+-[^\s]*r[^\s]*f", re.IGNORECASE),  # rm -rf variants
+    re.compile(r"\brm\s+-[^\s]*f[^\s]*r", re.IGNORECASE),  # rm -fr variants
+    re.compile(r"\bshred\b"),
+    re.compile(r"\bmkfs\b"),
+    re.compile(r"\bdd\s+.*of=/dev/", re.IGNORECASE),
+    re.compile(r"\bsudo\b"),
+    re.compile(r"\bchmod\b"),
+    re.compile(r"\bkill\s+-9\b"),
+    re.compile(r"\bkillall\b"),
+]
+
+
+def _sanitize_env() -> dict[str, str]:
+    """Return a copy of os.environ with secret-looking vars removed."""
+    return {k: v for k, v in os.environ.items() if not _SECRET_PATTERNS.search(k)}
+
+
+def _check_blocked(command: str) -> str | None:
+    """Return an error message if the command matches a blocked pattern."""
+    for pattern in _BLOCKED_PATTERNS:
+        if pattern.search(command):
+            return f"Command blocked by security policy: matches pattern {pattern.pattern!r}"
+    return None
+
+
+def _truncate_output(text: str, limit: int = _OUTPUT_LIMIT) -> str:
+    """Truncate output to limit bytes with notice."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n\n[... output truncated at {limit} bytes]"
 
 
 # Dangerous commands that could harm the system
@@ -77,6 +120,12 @@ class BashTool(Tool):
 
         timeout = max(1, min(timeout, 600))
 
+        # Check blocklist
+        if blocked_msg := _check_blocked(command):
+            return ToolResult(success=False, error=blocked_msg)
+
+        safe_env = _sanitize_env()
+
         try:
             if self.is_windows:
                 process = await asyncio.create_subprocess_exec(
@@ -84,6 +133,7 @@ class BashTool(Tool):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=self.workspace_dir,
+                    env=safe_env,
                 )
             else:
                 process = await asyncio.create_subprocess_shell(
@@ -91,6 +141,7 @@ class BashTool(Tool):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=self.workspace_dir,
+                    env=safe_env,
                 )
 
             try:
@@ -101,8 +152,8 @@ class BashTool(Tool):
                 process.kill()
                 return ToolResult(success=False, error=f"Command timed out after {timeout}s")
 
-            stdout_text = stdout.decode("utf-8", errors="replace")
-            stderr_text = stderr.decode("utf-8", errors="replace")
+            stdout_text = _truncate_output(stdout.decode("utf-8", errors="replace"))
+            stderr_text = _truncate_output(stderr.decode("utf-8", errors="replace"))
             output = stdout_text
             if stderr_text:
                 output += f"\n[stderr]:\n{stderr_text}"

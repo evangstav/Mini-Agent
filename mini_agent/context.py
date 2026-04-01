@@ -200,7 +200,7 @@ async def compact_messages(
     old_text_parts = []
     for msg in old_turns:
         content = msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
-        old_text_parts.append(f"[{msg.role}]: {content[:500]}")
+        old_text_parts.append(f"[{msg.role}]: {content}")
 
     conversation_block = "\n".join(old_text_parts)
 

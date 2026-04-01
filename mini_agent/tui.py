@@ -33,6 +33,7 @@ from .llm import LLMClient
 from .schema import LLMProvider, Message
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
+from .tools.mcp_loader import cleanup_mcp_connections
 
 # ── ANSI helpers ──────────────────────────────────────────────────────────────
 
@@ -272,6 +273,7 @@ async def run_tui(
             continue
         except EOFError:
             print(f"\n{_styled('Goodbye!', DIM)}")
+            await cleanup_mcp_connections()
             break
 
         user_input = user_input.strip()
@@ -290,6 +292,7 @@ async def run_tui(
 
             if cmd == "/exit" or cmd == "/quit":
                 print(f"{_styled('Goodbye!', DIM)}")
+                await cleanup_mcp_connections()
                 break
 
             if cmd == "/clear":

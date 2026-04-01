@@ -40,6 +40,7 @@ class LLMClient:
         api_base: str = "https://api.minimaxi.com",
         model: str = "MiniMax-M2.5",
         retry_config: RetryConfig | None = None,
+        max_tokens: int = 16384,
     ):
         """Initialize LLM client with specified provider.
 
@@ -51,6 +52,7 @@ class LLMClient:
                      For third-party APIs (e.g., https://api.siliconflow.cn/v1), used as-is.
             model: Model name to use
             retry_config: Optional retry configuration
+            max_tokens: Maximum tokens in response (default: 16384)
         """
         self.provider = provider
         self.api_key = api_key
@@ -87,6 +89,7 @@ class LLMClient:
                 api_base=full_api_base,
                 model=model,
                 retry_config=retry_config,
+                max_tokens=max_tokens,
             )
         elif provider == LLMProvider.OPENAI:
             self._client = OpenAIClient(
