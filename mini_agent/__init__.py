@@ -14,6 +14,7 @@ from .events import (
     ToolStart,
 )
 from .llm import LLMClient
+from .session_memory import SessionMemory
 from .sandbox import Decision, PermissionMode, Sandbox
 from .schema import FunctionCall, LLMProvider, LLMResponse, Message, ToolCall
 
@@ -29,6 +30,7 @@ __all__ = [
     "LLMProvider",
     "Message",
     "PermissionMode",
+    "SessionMemory",
     "Sandbox",
     "Decision",
     "LLMResponse",

@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from typing import Any, Optional
 
-from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold
+from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold, estimate_tokens
 from .events import (
     AgentCancelled,
     AgentDone,
@@ -20,6 +20,7 @@ from .hooks import CompactPayload, HookEvent, HookRegistry, SessionEndPayload, S
 from .llm import LLMClient
 from .sandbox import Decision, PermissionMode, Sandbox
 from .schema import Message, TokenUsage
+from .session_memory import SessionMemory
 from .tools.base import Tool, ToolResult
 
 # Type alias for the permission callback
@@ -50,6 +51,7 @@ class Agent:
         sandbox: Sandbox | None = None,
         hooks: HookRegistry | None = None,
         session_id: str | None = None,
+        session_memory: SessionMemory | None = None,
     ):
         self.llm = llm_client
         self.tools = {tool.name: tool for tool in tools}
@@ -78,6 +80,7 @@ class Agent:
         self.session_id = session_id
         self._running = False
         self.token_usage = TokenUsage()  # Accumulated token usage from API responses
+        self.session_memory = session_memory
 
     def add_user_message(self, content: str):
         """Add a user message to history."""
@@ -115,10 +118,39 @@ class Agent:
 
                 # Compact context if it's getting large
                 if self.compact_threshold > 0:
+                    current_tokens = estimate_tokens(self.messages)
                     old_count = len(self.messages)
-                    self.messages = await compact_messages(
-                        self.messages, self.llm, self.compact_threshold
-                    )
+                    used_free_summary = False
+
+                    # Try session memory as free compaction summary first
+                    if (
+                        self.session_memory
+                        and current_tokens >= self.compact_threshold
+                    ):
+                        free_summary = self.session_memory.as_compaction_summary()
+                        if free_summary:
+                            system_msg = self.messages[0] if self.messages and self.messages[0].role == "system" else None
+                            keep_recent = 6
+                            conversation = self.messages[1:] if system_msg else self.messages
+                            if len(conversation) > keep_recent:
+                                recent = conversation[-keep_recent:]
+                                compacted: list[Message] = []
+                                if system_msg:
+                                    compacted.append(system_msg)
+                                compacted.append(Message(
+                                    role="user",
+                                    content=f"[Session memory summary of {old_count - keep_recent - (1 if system_msg else 0)} earlier messages]:\n{free_summary}",
+                                ))
+                                compacted.extend(recent)
+                                self.messages = compacted
+                                used_free_summary = True
+
+                    # Fall back to LLM-based compaction
+                    if not used_free_summary:
+                        self.messages = await compact_messages(
+                            self.messages, self.llm, self.compact_threshold
+                        )
+
                     new_count = len(self.messages)
                     if new_count < old_count:
                         # Compaction happened — fire the COMPACT hook
@@ -175,6 +207,10 @@ class Agent:
                     tool_calls=response.tool_calls,
                 )
                 self.messages.append(assistant_msg)
+
+                # Track assistant text in session memory
+                if self.session_memory and response.content and not response.tool_calls:
+                    self.session_memory.record_assistant_text(response.content)
 
                 # No tool calls → task complete
                 if not response.tool_calls:
@@ -301,6 +337,24 @@ class Agent:
                                 name=function_name,
                             )
                         )
+
+                        # Record in session memory
+                        if self.session_memory:
+                            # Find the original arguments for this tool call
+                            tc_args = {}
+                            for tc_id, fn, args in tool_tasks:
+                                if tc_id == tool_call_id:
+                                    tc_args = args
+                                    break
+                            self.session_memory.record_tool_call(
+                                function_name, tc_args, content, result.success,
+                            )
+
+                    # Write session memory snapshot if due
+                    if self.session_memory:
+                        token_est = estimate_tokens(self.messages)
+                        if self.session_memory.should_update(token_est):
+                            self.session_memory.write_snapshot(token_est)
 
                 if cancel_event and cancel_event.is_set():
                     cancel_event_obj = AgentCancelled(content="Task cancelled by user.", steps=step + 1)
