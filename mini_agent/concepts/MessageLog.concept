@@ -1,0 +1,38 @@
+concept MessageLog
+  purpose
+    Maintain an ordered, append-only history of conversation messages partitioned by role.
+
+  state
+    messages: set Message
+    system_msgs: messages
+    user_msgs: messages
+    assistant_msgs: messages
+    tool_msgs: messages
+    role: messages -> one Role
+    content: messages -> one String
+    ordering: messages -> one Int
+
+  actions
+    init (m: Message, prompt: String)
+      pre: messages is empty
+      post: messages += m; system_msgs += m; role(m) = system; content(m) = prompt; ordering(m) = 0
+
+    append_user (m: Message, text: String)
+      post: messages += m; user_msgs += m; role(m) = user; content(m) = text; ordering(m) = |messages|
+
+    append_assistant (m: Message, text: String)
+      post: messages += m; assistant_msgs += m; role(m) = assistant; content(m) = text; ordering(m) = |messages|
+
+    append_tool_result (m: Message, output: String)
+      post: messages += m; tool_msgs += m; role(m) = tool; content(m) = output; ordering(m) = |messages|
+
+    replace_prefix (old_msgs: set Message, summary: Message)
+      pre: old_msgs subset of messages and system_msgs not in old_msgs
+      post: messages -= old_msgs; messages += summary; ordering adjusted
+
+    clear ()
+      post: messages = system_msgs
+
+    fork (keep_count: Int) -> set Message
+      pre: keep_count <= |messages|
+      post: returns copy of messages up to keep_count

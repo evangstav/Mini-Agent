@@ -8,6 +8,7 @@ returns a structured result to the parent.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 from ..events import AgentDone, AgentError
@@ -39,12 +40,14 @@ class AgentTool(Tool):
         llm_client: "LLMClient",
         available_tools: dict[str, Tool],
         sandbox: Sandbox | None = None,
+        permission_callback: Callable[[str, dict[str, Any]], Coroutine[Any, Any, bool]] | None = None,
         max_steps: int = _DEFAULT_MAX_STEPS,
         system_prompt: str | None = None,
     ):
         self._llm_client = llm_client
         self._available_tools = available_tools
         self._sandbox = sandbox
+        self._permission_callback = permission_callback
         self._max_steps = max_steps
         self._system_prompt = system_prompt or (
             "You are a focused sub-agent. Complete the given task using "
@@ -134,6 +137,7 @@ class AgentTool(Tool):
             system_prompt=self._system_prompt,
             tools=sub_tools,
             max_steps=resolved_steps,
+            permission_callback=self._permission_callback,
             sandbox=self._sandbox,
         )
 

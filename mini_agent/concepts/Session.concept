@@ -1,0 +1,31 @@
+concept Session [SessionId]
+  purpose
+    Bracket an agent's work into a named session with start and end boundaries that trigger lifecycle hooks.
+
+  state
+    sessions: set Session
+    idle: sessions
+    active: sessions
+    ended: sessions
+    session_id: sessions -> one SessionId
+    end_reason: ended -> one String
+
+  actions
+    create (s: Session, id: SessionId)
+      post: sessions += s; idle += s; session_id(s) = id
+
+    start (s: Session)
+      pre: s in idle
+      post: idle -= s; active += s
+
+    end (s: Session, reason: String)
+      pre: s in active
+      post: active -= s; ended += s; end_reason(s) = reason
+
+  sync
+    when AgentLoop.complete ()
+      then end (session, "done")
+    when AgentLoop.cancel ()
+      then end (session, "cancelled")
+    when AgentLoop.exhaust ()
+      then end (session, "errored")

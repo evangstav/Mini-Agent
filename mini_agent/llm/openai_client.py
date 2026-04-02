@@ -311,7 +311,12 @@ class OpenAIClient(LLMClientBase):
 
         Uses stream=True for real-time token delivery. Token usage arrives
         in the final chunk and is included in the message_complete event.
+        Stream initiation is retried on transient errors (429, 5xx).
         """
+        import asyncio
+
+        from ..retry import is_retryable
+
         request_params = self._prepare_request(messages, tools)
 
         params: dict[str, Any] = {
@@ -325,13 +330,32 @@ class OpenAIClient(LLMClientBase):
         if request_params["tools"]:
             params["tools"] = self._convert_tools(request_params["tools"])
 
+        # Retry stream creation for transient errors
+        max_attempts = (self.retry_config.max_retries + 1) if self.retry_config.enabled else 1
+        stream = None
+
+        for attempt in range(max_attempts):
+            try:
+                stream = await self.client.chat.completions.create(**params)
+                break
+            except Exception as e:
+                if attempt < max_attempts - 1 and is_retryable(e):
+                    delay = self.retry_config.calculate_delay(attempt)
+                    logger.warning(
+                        "OpenAI stream attempt %d failed: %s, retrying in %.2fs",
+                        attempt + 1, e, delay,
+                    )
+                    if self.retry_callback:
+                        self.retry_callback(e, attempt + 1)
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+
         text_content = ""
         thinking_content = ""
         tool_calls_map: dict[int, dict[str, Any]] = {}  # index -> {id, name, arguments_buf}
         finish_reason = "stop"
         usage = None
-
-        stream = await self.client.chat.completions.create(**params)
         async for chunk in stream:
             if not chunk.choices and hasattr(chunk, "usage") and chunk.usage:
                 # Final usage-only chunk

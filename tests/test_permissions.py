@@ -66,12 +66,15 @@ class TestPermissionRuleMatches:
 
 
 class TestPermissionRuleset:
-    def test_first_match_wins(self):
+    def test_last_rule_wins(self):
+        """Rules are evaluated in reverse order — last-added rule wins."""
         ruleset = PermissionRuleset(rules=[
-            PermissionRule(tool="bash", action=RuleAction.ALLOW, args={"command": "git *"}),
             PermissionRule(tool="bash", action=RuleAction.DENY),
+            PermissionRule(tool="bash", action=RuleAction.ALLOW, args={"command": "git *"}),
         ])
+        # The ALLOW rule is last and more specific — it wins for git commands
         assert ruleset.evaluate("bash", {"command": "git status"}) == RuleAction.ALLOW
+        # For non-git commands, the ALLOW rule doesn't match, so DENY (first from end) wins
         assert ruleset.evaluate("bash", {"command": "rm file"}) == RuleAction.DENY
 
     def test_no_match_returns_none(self):
@@ -187,10 +190,11 @@ class TestSandboxWithRules:
         assert sandbox.check("write_file", {"path": "x", "content": "y"}) == Decision.ASK
 
     def test_bash_arg_pattern_rules(self):
+        """With reversed evaluation, last-added rules win — put specific overrides last."""
         ruleset = PermissionRuleset(rules=[
+            PermissionRule(tool="bash", action=RuleAction.DENY, args={"command": "npm *"}),
             PermissionRule(tool="bash", action=RuleAction.ALLOW, args={"command": "npm test*"}),
             PermissionRule(tool="bash", action=RuleAction.ALLOW, args={"command": "npm run lint*"}),
-            PermissionRule(tool="bash", action=RuleAction.DENY, args={"command": "npm *"}),
         ])
         sandbox = Sandbox(mode=PermissionMode.AUTO, permission_rules=ruleset)
         assert sandbox.check("bash", {"command": "npm test"}) == Decision.ALLOW

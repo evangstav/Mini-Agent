@@ -44,7 +44,7 @@ from .permissions import load_rules
 from .sandbox import PermissionMode, Sandbox
 from .schema import LLMProvider, Message
 from .tools.agent_tool import AgentTool
-from .tools.bash_tool import BashTool
+from .tools.bash_tool import BashTool, BashKillTool, BashOutputTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
 from .tools.git_tool import GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
 from .tools.glob_tool import GlobTool
@@ -276,6 +276,8 @@ async def run_tui(
         WriteTool(workspace_dir=workspace),
         EditTool(workspace_dir=workspace),
         BashTool(workspace_dir=workspace),
+        BashOutputTool(),
+        BashKillTool(),
         GitStatusTool(workspace_dir=workspace),
         GitDiffTool(workspace_dir=workspace),
         GitCommitTool(workspace_dir=workspace),
@@ -296,15 +298,6 @@ async def run_tui(
     mcp_config = str(Path(workspace) / "mcp.json")
     mcp_tools = await load_mcp_tools_async(mcp_config)
     tools.extend(mcp_tools)
-
-    # Add AgentTool — shares llm_client for prompt cache, can use all other tools
-    all_tools_by_name = {t.name: t for t in tools}
-    agent_tool = AgentTool(
-        llm_client=llm_client,
-        available_tools=all_tools_by_name,
-        max_steps=max_steps,
-    )
-    tools.append(agent_tool)
 
     perm_mgr = PermissionManager()
     perm_cb = perm_mgr.check if enable_permissions else None
@@ -334,6 +327,17 @@ async def run_tui(
         permission_rules=permission_rules if permission_rules.rules else None,
     )
 
+    # Add AgentTool — shares llm_client for prompt cache, can use all other tools
+    all_tools_by_name = {t.name: t for t in tools}
+    agent_tool = AgentTool(
+        llm_client=llm_client,
+        available_tools=all_tools_by_name,
+        sandbox=sandbox,
+        permission_callback=perm_cb,
+        max_steps=max_steps,
+    )
+    tools.append(agent_tool)
+
     session_id = str(uuid.uuid4())
 
     agent = Agent(
@@ -347,6 +351,7 @@ async def run_tui(
         sandbox=sandbox,
         hooks=hooks,
         session_id=session_id,
+        auto_end_session=False,
     )
 
     # Load existing session if requested
@@ -455,6 +460,9 @@ async def run_tui(
                         model=arg,
                     )
                     model = arg
+                    # Propagate new client to sub-agent tool and dream consolidator
+                    agent_tool._llm_client = agent.llm
+                    dream.llm_client = agent.llm
                     print(f"{_styled('Model changed to:', GREEN)} {arg}")
                 else:
                     print(f"{_styled('Current model:', DIM)} {model}")

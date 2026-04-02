@@ -82,9 +82,6 @@ _SAFE_PREFIXES: tuple[str, ...] = tuple(
     cmd for cmd in _SAFE_COMMANDS if " " in cmd
 )
 
-# Shell operators that indicate writes or side effects
-_WRITE_OPERATORS = re.compile(r"[>|]|>>|&&|\|\||;")
-
 # Tools that are always safe (read-only)
 _SAFE_TOOLS: frozenset[str] = frozenset({
     "read_file",
@@ -160,6 +157,11 @@ def _is_domain_allowed(url: str, allowed_domains: frozenset[str]) -> bool:
 
 # ── Command classification ──────────────────────────────────────────────────
 
+def _strip_quotes(s: str) -> str:
+    """Remove single- and double-quoted substrings to avoid false positives on operators."""
+    return re.sub(r"'[^']*'|\"[^\"]*\"", "", s)
+
+
 def is_command_safe(command: str) -> bool:
     """Classify a shell command as safe (read-only) or not.
 
@@ -170,9 +172,9 @@ def is_command_safe(command: str) -> bool:
     if not stripped:
         return False
 
-    # Check for write operators (pipes to commands are OK, redirects are not)
-    # Allow simple pipes (|) but block redirects (>, >>)
-    if re.search(r">|>>", stripped):
+    # Check for redirect operators outside of quoted strings
+    unquoted = _strip_quotes(stripped)
+    if re.search(r">>|>", unquoted):
         return False
 
     # For chained commands (&&, ||, ;), each sub-command must be safe

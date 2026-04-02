@@ -1,0 +1,43 @@
+concept Permission [Mode]
+  purpose
+    Decide whether a tool call should be allowed, denied, or gated for user approval based on a layered rule system and permission mode.
+
+  state
+    rules: set Rule
+    global_rules: rules
+    project_rules: rules
+    decisions: set Decision
+    allowed: decisions
+    denied: decisions
+    gated: decisions
+    tool_pattern: rules -> one String
+    action: rules -> one Action
+    arg_constraints: rules -> set Constraint
+
+  actions
+    load_global (r: Rule, pattern: String, act: Action)
+      post: rules += r; global_rules += r; tool_pattern(r) = pattern; action(r) = act
+
+    load_project (r: Rule, pattern: String, act: Action)
+      post: rules += r; project_rules += r; tool_pattern(r) = pattern; action(r) = act
+
+    evaluate (tool: String, args: Args, d: Decision)
+      post: decisions += d
+            if matching rule found in reversed(rules): apply rule action
+            else if Mode = full_access: allowed += d
+            else if Mode = readonly and tool is read_only: allowed += d
+            else if Mode = readonly: denied += d
+            else if Mode = auto and tool is safe: allowed += d
+            else: gated += d
+
+    grant (d: Decision)
+      pre: d in gated
+      post: gated -= d; allowed += d
+
+    refuse (d: Decision)
+      pre: d in gated
+      post: gated -= d; denied += d
+
+  sync
+    when ToolExecution.request (tc, name, args)
+      then evaluate (name, args, new Decision)

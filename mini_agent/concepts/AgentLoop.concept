@@ -1,0 +1,49 @@
+concept AgentLoop [MaxSteps]
+  purpose
+    Drive a bounded think-act-observe cycle to completion, tracking progress against a step limit.
+
+  state
+    status: one Status
+    step_count: one Int
+    max_steps: one Int
+
+  actions
+    begin (limit: MaxSteps)
+      pre: status = idle
+      post: status = thinking; step_count = 0; max_steps = limit
+
+    think ()
+      pre: status = thinking
+      post: status = acting
+
+    act ()
+      pre: status = acting
+      post: step_count += 1; status = observing
+
+    observe ()
+      pre: status = observing
+      post: status = thinking
+
+    complete ()
+      pre: status = acting
+      post: status = done
+
+    cancel ()
+      pre: status != idle and status != done
+      post: status = cancelled
+
+    exhaust ()
+      pre: status = thinking and step_count >= max_steps
+      post: status = errored
+
+    propose_plan ()
+      pre: status = acting
+      post: status = plan_pending
+
+    approve_plan ()
+      pre: status = plan_pending
+      post: status = observing
+
+    reject_plan ()
+      pre: status = plan_pending
+      post: status = thinking

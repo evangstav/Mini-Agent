@@ -1,0 +1,38 @@
+concept ContextBudget [Window, Threshold]
+  purpose
+    Monitor conversation size against a context window and trigger compaction when the threshold is crossed.
+
+  state
+    usage: one Int
+    window: one Int
+    threshold: one Int
+    needs_compaction: one Bool
+
+  actions
+    init (w: Window, t: Threshold)
+      post: window = w; threshold = t; usage = 0; needs_compaction = false
+
+    record_growth (tokens: Int)
+      post: usage += tokens; needs_compaction = (usage >= threshold)
+
+    record_shrink (tokens: Int)
+      post: usage -= tokens; needs_compaction = (usage >= threshold)
+
+    compact ()
+      pre: needs_compaction = true
+      post: needs_compaction = false
+
+    reset ()
+      post: usage = 0; needs_compaction = false
+
+  sync
+    when MessageLog.append_user (m, text)
+      then record_growth (estimate(text))
+    when MessageLog.append_assistant (m, text)
+      then record_growth (estimate(text))
+    when MessageLog.append_tool_result (m, output)
+      then record_growth (estimate(output))
+    when MessageLog.replace_prefix (old, summary)
+      then record_shrink (estimate(old) - estimate(summary))
+    when MessageLog.clear ()
+      then reset ()

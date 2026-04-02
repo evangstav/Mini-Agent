@@ -151,7 +151,9 @@ class DreamConsolidator:
         for msg in reversed(messages):
             if msg.role == "system":
                 continue  # Skip system prompt (it's not conversation)
-            content = msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
+            content = (
+                msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
+            )
             # Truncate individual messages that are very long
             if len(content) > 2000:
                 content = content[:2000] + "..."
@@ -204,7 +206,11 @@ class DreamConsolidator:
             )
             result = json.loads(response.content)
             return result.get("updates", [])
-        except (json.JSONDecodeError, Exception):
+        except json.JSONDecodeError as exc:
+            logger.warning("Dream consolidator returned invalid JSON: %s", exc)
+            return []
+        except Exception as exc:  # noqa: BLE001 — surface consolidation failures
+            logger.warning("Dream consolidator failed: %s", exc)
             return []
 
     # ── Phase 4: Prune ───────────────────────────────────────────────

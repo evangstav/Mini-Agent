@@ -143,9 +143,10 @@ class AnthropicClient(LLMClientBase):
 
                     # Add thinking block if present
                     if msg.thinking:
-                        content_blocks.append(
-                            {"type": "thinking", "text": msg.thinking}
-                        )
+                        block = {"type": "thinking", "thinking": msg.thinking}
+                        if msg.thinking_signature:
+                            block["signature"] = msg.thinking_signature
+                        content_blocks.append(block)
 
                     # Add text content if present
                     if msg.content:
@@ -227,6 +228,7 @@ class AnthropicClient(LLMClientBase):
         # Extract text content, thinking, and tool calls
         text_content = ""
         thinking_content = ""
+        thinking_signature = ""
         tool_calls = []
 
         for block in response.content:
@@ -234,6 +236,7 @@ class AnthropicClient(LLMClientBase):
                 text_content += block.text
             elif block.type == "thinking":
                 thinking_content += block.thinking
+                thinking_signature = getattr(block, "signature", "") or ""
             elif block.type == "tool_use":
                 # Parse Anthropic tool_use block
                 tool_calls.append(
@@ -271,6 +274,7 @@ class AnthropicClient(LLMClientBase):
         return LLMResponse(
             content=text_content,
             thinking=thinking_content if thinking_content else None,
+            thinking_signature=thinking_signature if thinking_signature else None,
             tool_calls=tool_calls if tool_calls else None,
             finish_reason=response.stop_reason or "stop",
             usage=usage,
@@ -325,8 +329,13 @@ class AnthropicClient(LLMClientBase):
 
         Uses client.messages.stream() for real-time token delivery.
         Token usage and tool calls are accumulated and delivered in the
-        final message_complete event.
+        final message_complete event. Stream initiation is retried on
+        transient errors (429, 5xx).
         """
+        import asyncio
+
+        from ..retry import is_retryable
+
         request_params = self._prepare_request(messages, tools)
 
         params: dict[str, Any] = {
@@ -339,6 +348,29 @@ class AnthropicClient(LLMClientBase):
         if request_params["tools"]:
             params["tools"] = self._convert_tools(request_params["tools"])
 
+        # Retry stream initiation for transient errors
+        max_attempts = (self.retry_config.max_retries + 1) if self.retry_config.enabled else 1
+        stream_cm = None
+        stream = None
+
+        for attempt in range(max_attempts):
+            try:
+                stream_cm = self.client.messages.stream(**params)
+                stream = await stream_cm.__aenter__()
+                break
+            except Exception as e:
+                if attempt < max_attempts - 1 and is_retryable(e):
+                    delay = self.retry_config.calculate_delay(attempt)
+                    logger.warning(
+                        "Anthropic stream attempt %d failed: %s, retrying in %.2fs",
+                        attempt + 1, e, delay,
+                    )
+                    if self.retry_callback:
+                        self.retry_callback(e, attempt + 1)
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+
         # Accumulate full content for the final LLMResponse
         text_content = ""
         thinking_content = ""
@@ -346,7 +378,7 @@ class AnthropicClient(LLMClientBase):
         current_tool: dict[str, Any] | None = None
         input_json_buf = ""
 
-        async with self.client.messages.stream(**params) as stream:
+        try:
             async for event in stream:
                 event_type = event.type
 
@@ -386,6 +418,15 @@ class AnthropicClient(LLMClientBase):
 
             # After stream completes, get the final message for usage info
             final_message = await stream.get_final_message()
+        finally:
+            if stream_cm is not None:
+                await stream_cm.__aexit__(None, None, None)
+
+        # Extract thinking signature from final message content blocks
+        thinking_signature = ""
+        for block in final_message.content:
+            if getattr(block, "type", None) == "thinking":
+                thinking_signature = getattr(block, "signature", "") or ""
 
         usage = None
         if hasattr(final_message, "usage") and final_message.usage:
@@ -405,6 +446,7 @@ class AnthropicClient(LLMClientBase):
             response=LLMResponse(
                 content=text_content,
                 thinking=thinking_content if thinking_content else None,
+                thinking_signature=thinking_signature if thinking_signature else None,
                 tool_calls=tool_calls if tool_calls else None,
                 finish_reason=final_message.stop_reason or "stop",
                 usage=usage,

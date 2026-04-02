@@ -148,7 +148,7 @@ class SessionMemory:
             current_state=self._current_state,
             task=self._task_description,
             files=self._format_list(sorted(self._files_touched)) or "(none)",
-            workflow=self._format_list(self._worklog[-20:]) or "(no commands yet)",
+            workflow=self._format_list(self._workflow_summary()) or "(no progress yet)",
             errors=self._format_list(self._errors[-10:]) or "(none)",
             learnings=self._format_list(self._learnings[-10:]) or "(none)",
             worklog=self._format_list(self._worklog[-30:]) or "(empty)",
@@ -177,11 +177,25 @@ class SessionMemory:
             current_state=self._current_state,
             task=self._task_description,
             files=self._format_list(sorted(self._files_touched)) or "(none)",
-            workflow=self._format_list(self._worklog[-20:]) or "(no commands yet)",
+            workflow=self._format_list(self._workflow_summary()) or "(no progress yet)",
             errors=self._format_list(self._errors[-10:]) or "(none)",
             learnings=self._format_list(self._learnings[-10:]) or "(none)",
             worklog=self._format_list(self._worklog[-30:]) or "(empty)",
         )
+
+    def _workflow_summary(self, limit: int = 10) -> list[str]:
+        """Deduplicated recent commands for workflow progress section."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for entry in reversed(self._worklog):
+            clean = entry.replace(" **FAILED**", "")
+            if clean not in seen:
+                seen.add(clean)
+                result.append(clean)
+            if len(result) >= limit:
+                break
+        result.reverse()
+        return result
 
     @staticmethod
     def _format_list(items: list[str] | set[str]) -> str:

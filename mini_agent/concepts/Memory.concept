@@ -1,0 +1,36 @@
+concept Memory [MemoryDir]
+  purpose
+    Persist durable cross-session knowledge as indexed files, updated by a consolidation pass after each session.
+
+  state
+    memories: set MemoryFile
+    active: memories
+    deleted: memories
+    name: memories -> one String
+    description: memories -> one String
+    mem_type: memories -> one MemType
+    content: memories -> one String
+
+  actions
+    dream (transcript: String)
+      post: produces a set of create/update/delete operations from transcript; applies them
+
+    create_memory (m: MemoryFile, n: String, desc: String, t: MemType, c: String)
+      pre: no m' in active where name(m') = n
+      post: memories += m; active += m; name(m) = n; description(m) = desc; mem_type(m) = t; content(m) = c
+
+    update_memory (m: MemoryFile, c: String)
+      pre: m in active
+      post: content(m) = c
+
+    delete_memory (m: MemoryFile)
+      pre: m in active
+      post: active -= m; deleted += m
+
+    rebuild_index ()
+      post: index file regenerated from name and description of all active memories
+
+  sync
+    when Session.end (s, reason)
+      then dream (s.transcript)
+           rebuild_index ()

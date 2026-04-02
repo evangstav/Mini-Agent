@@ -63,17 +63,24 @@ class PermissionRule:
 
 @dataclass
 class PermissionRuleset:
-    """Ordered set of permission rules. First match wins."""
+    """Ordered set of permission rules.
+
+    Rules are evaluated in reverse order (last-added rule wins).
+    The first match encountered during this reverse walk determines the action.
+    This means project-level rules (appended after global rules) take priority.
+    """
 
     rules: list[PermissionRule] = field(default_factory=list)
 
     def evaluate(self, tool_name: str, arguments: dict[str, Any]) -> RuleAction | None:
         """Evaluate rules against a tool call.
 
-        Returns the action of the first matching rule, or None if no rule matches
+        Rules are walked in reverse order so that later rules (e.g., project-local)
+        override earlier ones (e.g., global defaults). Returns the action of the
+        first matching rule in this reverse walk, or None if no rule matches
         (indicating the sandbox default should apply).
         """
-        for rule in self.rules:
+        for rule in reversed(self.rules):
             if rule.matches(tool_name, arguments):
                 logger.debug(
                     "Permission rule matched: %s(%s) → %s",
@@ -137,14 +144,14 @@ def load_rules_from_toml(path: Path) -> PermissionRuleset:
 def load_rules(project_dir: str | None = None) -> PermissionRuleset:
     """Load permission rules from standard config locations.
 
-    Search order (later files' rules are appended, so project rules take priority
-    when placed after global rules):
+    Search order (later files' rules are appended after earlier ones):
         1. ~/.mini-agent/permissions.toml  (user-global)
         2. <project>/.mini-agent.toml      (project-local)
 
-    Rules from both files are concatenated. Since first-match wins, put more
-    specific rules in the project file *after* global rules for overrides,
-    or reorder as needed.
+    Rules from both files are concatenated into a single list.
+    PermissionRuleset.evaluate() walks this list in reverse, so
+    project rules (appended last) are checked first and naturally
+    override global defaults.
     """
     combined_rules: list[PermissionRule] = []
 

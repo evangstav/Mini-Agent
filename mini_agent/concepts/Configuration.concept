@@ -1,0 +1,24 @@
+concept Configuration
+  purpose
+    Resolve agent settings from a hierarchy of configuration layers where later layers override earlier ones.
+
+  state
+    layers: set Layer
+    global_layer: layers
+    project_layer: layers
+    cli_layer: layers
+    priority: layers -> one Int
+    settings: layers -> set Setting
+    resolved: set Setting
+    key: Setting -> one String
+    value: Setting -> one Value
+
+  actions
+    load_layer (l: Layer, p: Int, entries: set Setting)
+      post: layers += l; priority(l) = p; settings(l) = entries
+
+    resolve ()
+      post: for each key across all layers, resolved contains the setting from the highest-priority layer
+
+    override (k: String, v: Value)
+      post: resolved setting for k updated to v

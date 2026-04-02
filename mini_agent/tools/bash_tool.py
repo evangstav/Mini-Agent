@@ -24,8 +24,12 @@ _BLOCKED_PATTERNS = [
     re.compile(r"\brm\s+-[^\s]*f[^\s]*r", re.IGNORECASE),  # rm -fr variants
     re.compile(r"\bshred\b"),
     re.compile(r"\bmkfs\b"),
-    re.compile(r"\bdd\s+.*of=/dev/", re.IGNORECASE),
+    re.compile(r"\bdd\b.*of=", re.IGNORECASE),
     re.compile(r"\bkillall\b"),
+    re.compile(r"\bfdisk\b"),
+    re.compile(r">\s*/dev/sd"),
+    re.compile(r"\bcurl\b.*\|\s*sh"),
+    re.compile(r"\bwget\b.*\|\s*sh"),
 ]
 
 
@@ -47,19 +51,6 @@ def _truncate_output(text: str, limit: int = _OUTPUT_LIMIT) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n\n[... output truncated at {limit} bytes]"
-
-
-# Dangerous commands that could harm the system
-DANGEROUS_PATTERNS = [
-    r"\brm\s+-rf\s+/",  # Recursive delete from root
-    r"\bdd\b.*of=",     # Direct disk write
-    r"\bmkfs\b",        # Format filesystem
-    r"\bfdisk\b",       # Partition tool
-    r"\b shred\b",      # Secure delete
-    r">\s*/dev/sd",     # Writing to disk device
-    r"\bcurl\b.*\|\s*sh",  # Pipe to shell (common infection vector)
-    r"\bwget\b.*\|\s*sh",  # Same for wget
-]
 
 
 class _BackgroundProcess:
@@ -167,9 +158,9 @@ class BashTool(Tool):
         if self.allow_dangerous:
             return True, ""
 
-        for pattern in DANGEROUS_PATTERNS:
-            if re.search(pattern, command, re.IGNORECASE):
-                return False, f"Command matches blocked pattern: {pattern}"
+        msg = _check_blocked(command)
+        if msg:
+            return False, msg
         return True, ""
 
     async def execute(
@@ -187,10 +178,6 @@ class BashTool(Tool):
             )
 
         timeout = max(1, min(timeout, 600))
-
-        # Check blocklist
-        if blocked_msg := _check_blocked(command):
-            return ToolResult(success=False, error=blocked_msg)
 
         safe_env = _sanitize_env()
 

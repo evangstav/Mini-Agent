@@ -1,0 +1,40 @@
+concept ToolExecution [ToolRegistry]
+  purpose
+    Manage the lifecycle of tool calls from request through permission gating to parallel execution and result collection.
+
+  state
+    calls: set ToolCall
+    requested: calls
+    permitted: calls
+    denied: calls
+    executing: calls
+    succeeded: calls
+    failed: calls
+    tool_name: calls -> one String
+    arguments: calls -> one Args
+    result: calls -> lone Result
+
+  actions
+    request (tc: ToolCall, name: String, args: Args)
+      pre: name in ToolRegistry
+      post: calls += tc; requested += tc; tool_name(tc) = name; arguments(tc) = args
+
+    permit (tc: ToolCall)
+      pre: tc in requested
+      post: requested -= tc; permitted += tc
+
+    deny (tc: ToolCall, reason: String)
+      pre: tc in requested
+      post: requested -= tc; denied += tc; result(tc) = Error(reason)
+
+    execute (tc: ToolCall)
+      pre: tc in permitted
+      post: permitted -= tc; executing += tc
+
+    succeed (tc: ToolCall, content: String)
+      pre: tc in executing
+      post: executing -= tc; succeeded += tc; result(tc) = Ok(content)
+
+    fail (tc: ToolCall, error: String)
+      pre: tc in executing
+      post: executing -= tc; failed += tc; result(tc) = Error(error)
