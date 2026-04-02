@@ -132,6 +132,8 @@ class Agent:
         try:
             await self._ensure_session_started()
             logger.info("Agent run started (max_steps=%d, session=%s)", self.max_steps, self.session_id)
+            _edited_files = False
+            _ran_tests = False
 
             for step in range(self.max_steps):
                 if cancel_event and cancel_event.is_set():
@@ -186,8 +188,18 @@ class Agent:
                     tool_calls=response.tool_calls,
                 )
 
-                # No tool calls → task complete
+                # No tool calls → task complete (with verification gate)
                 if not response.tool_calls:
+                    # If agent edited files but never ran tests, nudge it to verify
+                    if _edited_files and not _ran_tests and step < self.max_steps - 1:
+                        logger.info("Verification gate: agent edited files but didn't run tests, nudging")
+                        self.log.append_user(
+                            "You edited code but haven't run any tests to verify your changes. "
+                            "Please run the relevant tests before finishing."
+                        )
+                        _ran_tests = True  # Don't nudge twice
+                        continue
+
                     logger.info("Agent completed at step %d", step + 1)
                     done_event = AgentDone(content=response.content, steps=step + 1)
                     if self._auto_end_session:
@@ -204,6 +216,16 @@ class Agent:
                     yield PlanProposal(proposed_calls=proposed, steps=step + 1)
                     self._running = False
                     return
+
+                # Track edits and test runs for the verification gate
+                for tc in response.tool_calls:
+                    fn = tc.function.name
+                    if fn in ("edit_file", "write_file"):
+                        _edited_files = True
+                    if fn == "bash":
+                        cmd = tc.function.arguments.get("command", "")
+                        if any(kw in cmd for kw in ("pytest", "python -m pytest", "test", "npm test", "go test", "cargo test")):
+                            _ran_tests = True
 
                 # Act: execute tool calls, Observe: collect results
                 async for event in self._executor.execute_batch(response.tool_calls, self.token_usage):

@@ -60,7 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     swe_parser.add_argument("--slice", default=None, help="Instance range, e.g. '0:5' (default: all)")
     swe_parser.add_argument("--subset", default="verified", choices=["verified", "lite", "full"],
                             help="Dataset subset (default: verified)")
-    swe_parser.add_argument("--max-steps", type=int, default=30, help="Max agent steps per instance")
+    swe_parser.add_argument("--max-steps", type=int, default=50, help="Max agent steps per instance")
+    swe_parser.add_argument("--attempts", type=int, default=1,
+                            help="Best-of-N attempts per instance (default: 1, try 3 for +15-30%%)")
     swe_parser.add_argument("--output", default="predictions.jsonl", help="Output file")
 
     he_parser = bench_sub.add_parser("humaneval", help="Run HumanEval+")
@@ -201,6 +203,7 @@ def _cmd_bench(args: argparse.Namespace) -> None:
             subset=args.subset,
             slice_range=args.slice,
             output_path=args.output,
+            attempts=getattr(args, "attempts", 1),
         ))
         console.print(f"[success]Predictions written to[/] {out}")
         console.print("[info]Evaluate with: sb-cli submit or swebench.harness.run_evaluation[/]")

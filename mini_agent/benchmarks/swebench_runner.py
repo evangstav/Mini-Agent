@@ -26,8 +26,10 @@ from ..sandbox import PermissionMode, Sandbox
 from ..schema import LLMProvider
 from ..tools.bash_tool import BashTool
 from ..tools.file_tools import EditTool, ReadTool
+from ..tools.find_definition import FindDefinitionTool
 from ..tools.glob_tool import GlobTool
 from ..tools.grep_tool import GrepTool
+from ..tools.list_dir import ListDirTool
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +193,8 @@ class SWEBenchRunner:
         tools = [
             ReadTool(workspace_dir=str(workdir)),
             EditTool(workspace_dir=str(workdir)),
+            FindDefinitionTool(workspace_dir=str(workdir)),
+            ListDirTool(workspace_dir=str(workdir)),
             GlobTool(workspace_dir=str(workdir)),
             GrepTool(workspace_dir=str(workdir)),
             BashTool(workspace_dir=str(workdir)),
@@ -230,12 +234,58 @@ class SWEBenchRunner:
             "model_patch": patch,
         }
 
+    async def run_instance_best_of_n(
+        self, instance: dict[str, Any], n: int = 3,
+    ) -> dict[str, str]:
+        """Run agent N times on the same instance, pick the most common non-empty patch.
+
+        Based on CodeMonkeys (Stanford 2025): Best-of-N with majority voting
+        gives +15-30% relative improvement for 3-5x cost.
+        """
+        import shutil
+        from collections import Counter
+
+        patches = []
+        for attempt in range(n):
+            with tempfile.TemporaryDirectory(prefix=f"swe_attempt_{attempt}_") as tmpdir:
+                workdir = Path(tmpdir) / "repo"
+                pred = await self.run_instance(instance, workdir)
+                patch = pred["model_patch"]
+                if patch.strip():
+                    patches.append(patch)
+                logger.info(
+                    "Attempt %d/%d for %s: patch=%d chars",
+                    attempt + 1, n, instance["instance_id"], len(patch),
+                )
+
+        if not patches:
+            return {
+                "instance_id": instance["instance_id"],
+                "model_name_or_path": f"mini-agent-{self.model}",
+                "model_patch": "",
+            }
+
+        # Majority voting: pick the most common patch
+        counts = Counter(patches)
+        best_patch, best_count = counts.most_common(1)[0]
+        logger.info(
+            "Best-of-%d for %s: %d/%d attempts produced patches, majority=%d",
+            n, instance["instance_id"], len(patches), n, best_count,
+        )
+
+        return {
+            "instance_id": instance["instance_id"],
+            "model_name_or_path": f"mini-agent-{self.model}",
+            "model_patch": best_patch,
+        }
+
     async def run_dataset(
         self,
         subset: str = "verified",
         split: str = "test",
         slice_range: str | None = None,
         output_path: str = "predictions.jsonl",
+        attempts: int = 1,
     ) -> Path:
         """Run the agent against multiple SWE-bench instances.
 
@@ -244,6 +294,7 @@ class SWEBenchRunner:
             split: dataset split (usually "test")
             slice_range: e.g. "0:5" for first 5 instances
             output_path: where to write predictions JSONL
+            attempts: Best-of-N attempts per instance (1=single run, 3=majority voting)
         """
         from datasets import load_dataset
 
@@ -266,12 +317,15 @@ class SWEBenchRunner:
         out = Path(output_path)
 
         for i, instance in enumerate(ds):
-            logger.info("[%d/%d] %s", i + 1, len(ds), instance["instance_id"])
+            logger.info("[%d/%d] %s (attempts=%d)", i + 1, len(ds), instance["instance_id"], attempts)
 
-            with tempfile.TemporaryDirectory(prefix=f"swebench_{i}_") as tmpdir:
-                workdir = Path(tmpdir) / "repo"
-                pred = await self.run_instance(instance, workdir)
-                predictions.append(pred)
+            if attempts > 1:
+                pred = await self.run_instance_best_of_n(instance, n=attempts)
+            else:
+                with tempfile.TemporaryDirectory(prefix=f"swebench_{i}_") as tmpdir:
+                    workdir = Path(tmpdir) / "repo"
+                    pred = await self.run_instance(instance, workdir)
+            predictions.append(pred)
 
                 # Write incrementally so we don't lose progress on crash
                 with open(out, "w") as f:

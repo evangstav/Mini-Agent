@@ -20,9 +20,11 @@ from ..schema import LLMProvider
 from ..tools.agent_tool import AgentTool
 from ..tools.bash_tool import BashTool, BashKillTool, BashOutputTool
 from ..tools.file_tools import EditTool, ReadTool, WriteTool
+from ..tools.find_definition import FindDefinitionTool
 from ..tools.git_tool import GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
 from ..tools.glob_tool import GlobTool
 from ..tools.grep_tool import GrepTool
+from ..tools.list_dir import ListDirTool
 from ..tools.mcp_loader import load_mcp_tools_async
 from ..tools.web_fetch import WebFetchTool
 from ..tools.web_search import WebSearchTool
@@ -120,6 +122,8 @@ async def build_repl_context(
         GitBranchTool(workspace_dir=workspace),
         GlobTool(workspace_dir=workspace),
         GrepTool(workspace_dir=workspace),
+        FindDefinitionTool(workspace_dir=workspace),
+        ListDirTool(workspace_dir=workspace),
         WebSearchTool(),
         WebFetchTool(),
     ]
