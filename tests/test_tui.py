@@ -46,13 +46,13 @@ class TestTruncate:
 
     def test_long(self):
         result = _truncate("a" * 20, 10)
-        assert len(result) == 13  # 10 chars + "..."
-        assert result.endswith("...")
+        assert len(result) == 11  # 10 chars + "…" (Unicode ellipsis)
+        assert result.endswith("…")
 
     def test_newlines(self):
         result = _truncate("hello\nworld", 50)
         assert "\n" not in result
-        assert "hello world" == result
+        assert "hello↵ world" == result
 
 
 # ── Unit tests: session persistence ──────────────────────────────────────────

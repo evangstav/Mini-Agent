@@ -2,7 +2,8 @@
 
 import os
 import tempfile
-from unittest.mock import AsyncMock
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -217,8 +218,13 @@ class TestSystemPromptBuilder:
         assert "truncated" in prompt
 
     def test_no_claude_md(self, tmp_path):
-        builder = SystemPromptBuilder("Base.", str(tmp_path))
-        prompt = builder.build()
+        # Create .git to bound the upward walk so it doesn't find repo CLAUDE.md
+        (tmp_path / ".git").mkdir()
+        # Also patch global CLAUDE.md path so the test doesn't find the user's real file
+        fake_global = tmp_path / ".no-claude" / "CLAUDE.md"
+        with patch.object(Path, "home", return_value=tmp_path / ".no-home"):
+            builder = SystemPromptBuilder("Base.", str(tmp_path))
+            prompt = builder.build()
         assert "CLAUDE.md" not in prompt
 
     def test_includes_git_info(self):

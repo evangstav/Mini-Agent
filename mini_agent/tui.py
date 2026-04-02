@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -39,11 +40,15 @@ from .events import (
     ToolStart,
 )
 from .llm import LLMClient
+from .permissions import load_rules
+from .sandbox import PermissionMode, Sandbox
 from .schema import LLMProvider, Message
 from .tools.agent_tool import AgentTool
 from .tools.bash_tool import BashTool
 from .tools.file_tools import EditTool, ReadTool, WriteTool
 from .tools.git_tool import GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
+from .tools.glob_tool import GlobTool
+from .tools.grep_tool import GrepTool
 from .log import setup_logging
 from .tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_async
 from .tools.web_fetch import WebFetchTool
@@ -276,9 +281,16 @@ async def run_tui(
         GitCommitTool(workspace_dir=workspace),
         GitLogTool(workspace_dir=workspace),
         GitBranchTool(workspace_dir=workspace),
+        GlobTool(workspace_dir=workspace),
+        GrepTool(workspace_dir=workspace),
         WebSearchTool(),
         WebFetchTool(),
     ]
+
+    # Filter tools by config allowlist (if configured)
+    if cfg.tools:
+        allowed = set(cfg.tools)
+        tools = [t for t in tools if t.name in allowed]
 
     # Load MCP tools from config
     mcp_config = str(Path(workspace) / "mcp.json")
@@ -315,6 +327,15 @@ async def run_tui(
     )
     dream.register(hooks)
 
+    # Load permission rules and create sandbox
+    permission_rules = load_rules(project_dir=workspace)
+    sandbox = Sandbox(
+        mode=PermissionMode.AUTO if enable_permissions else PermissionMode.FULL_ACCESS,
+        permission_rules=permission_rules if permission_rules.rules else None,
+    )
+
+    session_id = str(uuid.uuid4())
+
     agent = Agent(
         llm_client=llm_client,
         system_prompt=default_prompt,
@@ -323,7 +344,9 @@ async def run_tui(
         tool_result_store=tool_result_store,
         project_dir=workspace,
         permission_callback=perm_cb,
+        sandbox=sandbox,
         hooks=hooks,
+        session_id=session_id,
     )
 
     # Load existing session if requested

@@ -3,12 +3,13 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Callable, Coroutine
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 from .audit import AuditLogger
-from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold
+from .context import SystemPromptBuilder, ToolResultStore, compact_messages, compute_compact_threshold, estimate_tokens
 from .events import (
     AgentCancelled,
     AgentDone,
@@ -25,6 +26,7 @@ from .hooks import CompactPayload, HookEvent, HookRegistry, SessionEndPayload, S
 from .llm import LLMClient
 from .sandbox import Decision, PermissionMode, Sandbox
 from .schema import Message, TokenUsage
+from .session_memory import SessionMemory
 from .tools.base import Tool, ToolResult
 
 # Type alias for the permission callback
@@ -84,6 +86,9 @@ class Agent:
         self._running = False
         self.token_usage = TokenUsage()  # Accumulated token usage from API responses
         self._audit = AuditLogger(session_id) if session_id else None
+        self._session_memory = SessionMemory(
+            output_path=Path(project_dir) / ".runtime" / "session_memory.md"
+        ) if project_dir else SessionMemory()
 
     def add_user_message(self, content: str):
         """Add a user message to history."""
@@ -324,6 +329,14 @@ class Agent:
                         if self.tool_result_store and result.success:
                             content = self.tool_result_store.store_if_large(content, tool_call_id)
 
+                        # Record in session memory
+                        self._session_memory.record_tool_call(
+                            function_name,
+                            args_by_id.get(tool_call_id, {}),
+                            content,
+                            result.success,
+                        )
+
                         yield ToolEnd(
                             tool_call_id=tool_call_id,
                             tool_name=function_name,
@@ -350,6 +363,11 @@ class Agent:
                                 name=function_name,
                             )
                         )
+
+                    # Write session memory snapshot if due
+                    token_est = estimate_tokens(self.messages)
+                    if self._session_memory.should_update(token_est):
+                        self._session_memory.write_snapshot(token_est)
 
                 if cancel_event and cancel_event.is_set():
                     cancel_event_obj = AgentCancelled(content="Task cancelled by user.", steps=step + 1)
@@ -548,6 +566,18 @@ class Agent:
         forked.system_prompt = self.system_prompt
         forked.messages = messages
         return forked
+
+    async def end_session(self) -> None:
+        """Clean up session resources — emit SESSION_END hook and write final memory snapshot."""
+        # Write final session memory snapshot
+        token_est = estimate_tokens(self.messages)
+        self._session_memory.update_state("Session ended")
+        self._session_memory.write_snapshot(token_est)
+
+        # Emit SESSION_END so dream consolidation and other hooks run
+        await self._emit_session_end(
+            AgentDone(content="Session ended by user.", steps=0)
+        )
 
     def get_history(self) -> list[Message]:
         """Get message history."""
