@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mini-agent = "mini_agent.tui:main"
+mini-agent = "mini_agent.cli:main"
 
 [project.optional-dependencies]
 dev = [
