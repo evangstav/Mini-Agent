@@ -140,16 +140,19 @@ class AgentTool(Tool):
         sub_agent.add_user_message(prompt)
 
         try:
-            result_text = ""
+            text_chunks: list[str] = []
             async for event in sub_agent.run_stream():
                 if isinstance(event, AgentDone):
-                    result_text = event.content
+                    if event.content:
+                        text_chunks.append(event.content)
                 elif isinstance(event, AgentError):
                     return ToolResult(
                         success=False,
                         error=f"Sub-agent error: {event.error}",
                     )
-            # AgentDone should have set result_text
+                elif hasattr(event, "content") and getattr(event, "type", "") == "text_chunk":
+                    text_chunks.append(event.content)
+            result_text = "\n".join(text_chunks).strip()
             return ToolResult(success=True, content=result_text or "(no output)")
         except Exception as e:
             logger.error("Sub-agent failed: %s", e)
