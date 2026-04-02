@@ -23,8 +23,10 @@ class GrepTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Search file contents using regex. Auto-detects ripgrep (rg) with fallback to grep. "
-            "Supports glob filters, case-insensitive search, and context lines."
+            "Search file contents by regex pattern. Uses ripgrep if available, falls back to grep. "
+            "Returns matching lines with file paths and line numbers. "
+            "Use this instead of 'bash grep' — it respects workspace boundaries and caps output at 100KB. "
+            "Supports glob filters (e.g., glob='*.py'), case-insensitive search, and context lines."
         )
 
     @property

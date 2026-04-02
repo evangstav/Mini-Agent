@@ -22,8 +22,8 @@ class WebSearchTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Search the web using DuckDuckGo. Returns top results with "
-            "title, URL, and snippet. No API key needed."
+            "Search the web via DuckDuckGo. Returns up to 8 results with title, URL, and snippet. "
+            "No API key required. Use for finding documentation, error messages, or library info."
         )
 
     @property

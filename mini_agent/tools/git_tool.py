@@ -65,8 +65,8 @@ class GitStatusTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Show the working tree status. Returns current branch, "
-            "staged/unstaged/untracked files as structured text."
+            "Show git working tree status: current branch, ahead/behind count, "
+            "staged/unstaged/untracked files. Use before committing to see what changed."
         )
 
     @property
@@ -132,9 +132,9 @@ class GitDiffTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Show changes between commits, working tree, and index. "
-            "By default shows unstaged changes. Use staged=true for staged changes, "
-            "or provide a ref (e.g. 'origin/main...HEAD') for branch diffs."
+            "Show git diff. Default: unstaged changes. "
+            "Use staged=true for cached changes, ref='origin/main...HEAD' for branch diff, "
+            "stat_only=true for file-level summary. Use path to limit scope."
         )
 
     @property
@@ -208,8 +208,9 @@ class GitCommitTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Stage files and create a git commit. Specify files to add "
-            "(or use add_all=true) and a commit message."
+            "Stage files and create a git commit. Provide specific files to stage, "
+            "or add_all=true for everything. Fails if nothing is staged. "
+            "Always run git_status first to see what will be committed."
         )
 
     @property
@@ -283,8 +284,8 @@ class GitLogTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Show commit history. Returns structured log with hash, author, date, "
-            "and message for each commit."
+            "Show commit history (default: 10 most recent). "
+            "Use oneline=true for compact output, ref for ranges, path to filter by file."
         )
 
     @property
@@ -358,8 +359,9 @@ class GitBranchTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Manage git branches. List branches, create new ones, or switch "
-            "to an existing branch."
+            "List, create, or switch git branches. "
+            "Default action: list. Use action='create' with branch_name to create, "
+            "'switch' to checkout an existing branch."
         )
 
     @property

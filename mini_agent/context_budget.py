@@ -45,12 +45,26 @@ class ContextBudget:
         llm_client: Any,
         hooks: HookRegistry,
     ) -> bool:
-        """If over threshold, compact the message log. Returns True if compaction occurred."""
+        """If over threshold, compact the message log. Returns True if compaction occurred.
+
+        Uses a two-pass strategy based on NeurIPS 2025 research:
+        1. Observation masking (free — no LLM call): replace old tool outputs with placeholders
+        2. LLM summarization (expensive): only if masking wasn't enough
+        """
         if self.threshold <= 0:
             return False
 
-        from .context import compact_messages
+        from .context import compact_messages, mask_observations
 
+        # Pass 1: Observation masking (free, no LLM call)
+        masked = mask_observations(log.messages)
+        if len(masked) < len(log.messages) or any(
+            m1.content != m2.content for m1, m2 in zip(masked, log.messages)
+            if isinstance(m1.content, str) and isinstance(m2.content, str)
+        ):
+            log.replace_prefix(masked)
+
+        # Pass 2: LLM compaction if still over threshold
         old_count = len(log)
         new_messages = await compact_messages(
             log.messages, llm_client, self.threshold

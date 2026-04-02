@@ -21,8 +21,9 @@ class WebFetchTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Fetch a URL and return its text content with HTML tags, scripts, "
-            "and styles stripped. Output capped at 25KB."
+            "Fetch a URL and return plain text (HTML stripped). "
+            "Output capped at 25KB. URL must start with http:// or https://. "
+            "Use for reading documentation pages, not for API calls."
         )
 
     @property

@@ -63,10 +63,10 @@ class AgentTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Spawn a sub-agent to handle a complex, multi-step task. "
-            "The sub-agent gets its own context and a subset of tools. "
-            "Use this to delegate work that benefits from a separate "
-            "context window (e.g., deep research, parallel investigations)."
+            "Spawn a sub-agent for PARALLELIZABLE work only (searching multiple locations, "
+            "running tests while editing). The sub-agent gets its own isolated context. "
+            "Do NOT use for sequential coding tasks — a single agent with good context is better. "
+            "Provide a detailed prompt — the sub-agent has NO prior conversation context."
         )
 
     @property

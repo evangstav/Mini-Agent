@@ -143,6 +143,56 @@ def prune_tool_results(
     return result
 
 
+# --- Observation Masking ---
+
+def mask_observations(
+    messages: list[Message],
+    keep_recent: int = 6,
+) -> list[Message]:
+    """Mask old tool outputs while preserving all action/reasoning history.
+
+    Based on NeurIPS 2025 finding (Lindenbauer et al.): observation masking
+    halves cost while matching LLM summarization quality. It avoids
+    "trajectory elongation" where summarization smooths over failures.
+
+    Replaces tool-result content with a short placeholder for all tool messages
+    outside the most recent *keep_recent* messages. The agent's own thoughts,
+    actions (tool calls), and reasoning are preserved in full.
+    """
+    if not messages or len(messages) <= keep_recent + 1:
+        return messages
+
+    # Split: system + old conversation + recent
+    system_msg = messages[0] if messages and messages[0].role == "system" else None
+    conversation = messages[1:] if system_msg else messages
+
+    if len(conversation) <= keep_recent:
+        return messages
+
+    boundary = len(conversation) - keep_recent
+    result = []
+    if system_msg:
+        result.append(system_msg)
+
+    for i, msg in enumerate(conversation):
+        if i < boundary and msg.role == "tool":
+            # Mask tool output but preserve the tool call metadata
+            content = msg.content if isinstance(msg.content, str) else ""
+            char_count = len(content)
+            result.append(Message(
+                role=msg.role,
+                content=f"[Previous tool output masked — {char_count} chars. Re-run if needed.]",
+                tool_call_id=msg.tool_call_id,
+                name=msg.name,
+            ))
+        else:
+            # Keep everything else: user messages, assistant messages (with
+            # thinking and tool_calls), system messages — all preserved in full
+            result.append(msg)
+
+    return result
+
+
 # --- Context Compaction ---
 
 def compute_compact_threshold(

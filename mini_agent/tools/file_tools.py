@@ -21,11 +21,16 @@ def _validate_path(file_path: Path, workspace_dir: Path) -> str | None:
         return f"Path escapes workspace: {file_path} resolves outside {workspace_dir}"
 
 
+# Default line cap for read_file output (SWE-Agent research: windowed output improves agent performance)
+_DEFAULT_MAX_LINES = 200
+
+
 class ReadTool(Tool):
     """Read file content."""
 
-    def __init__(self, workspace_dir: str = "."):
+    def __init__(self, workspace_dir: str = ".", max_lines: int = _DEFAULT_MAX_LINES):
         self.workspace_dir = Path(workspace_dir).absolute()
+        self.max_lines = max_lines
 
     @property
     def name(self) -> str:
@@ -33,16 +38,20 @@ class ReadTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Read file contents with line numbers. Supports offset/limit for large files."
+        return (
+            "Read file contents with line numbers. Returns up to 200 lines by default. "
+            "For large files, use offset and limit to read specific sections. "
+            "If the file exceeds the limit, the output is truncated with a notice showing total line count."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path to the file"},
-                "offset": {"type": "integer", "description": "Starting line number (1-indexed)"},
-                "limit": {"type": "integer", "description": "Number of lines to read"},
+                "path": {"type": "string", "description": "Absolute or workspace-relative path to the file."},
+                "offset": {"type": "integer", "description": "Starting line number (1-indexed). Use with limit to read a specific section."},
+                "limit": {"type": "integer", "description": f"Max lines to return (default: {self.max_lines}). Set higher if you need more context."},
             },
             "required": ["path"],
         }
@@ -62,13 +71,24 @@ class ReadTool(Tool):
             with open(file_path, encoding="utf-8") as f:
                 lines = f.readlines()
 
+            total_lines = len(lines)
             start = (offset - 1) if offset else 0
-            end = (start + limit) if limit else len(lines)
+            effective_limit = limit if limit is not None else self.max_lines
+            end = start + effective_limit
             start = max(0, start)
-            end = min(end, len(lines))
+            end = min(end, total_lines)
 
             numbered = [f"{i:6d}|{line.rstrip(chr(10))}" for i, line in enumerate(lines[start:end], start=start + 1)]
-            return ToolResult(success=True, content="\n".join(numbered))
+            result = "\n".join(numbered)
+
+            # Add truncation notice if output was capped
+            if end < total_lines and limit is None:
+                result += (
+                    f"\n\n[Showing lines {start + 1}-{end} of {total_lines}. "
+                    f"Use offset={end + 1} to see more, or limit=N to read a specific range.]"
+                )
+
+            return ToolResult(success=True, content=result)
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
@@ -85,7 +105,11 @@ class WriteTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Write content to a file (overwrites existing). Read first before editing."
+        return (
+            "Write content to a file, creating parent directories if needed. "
+            "OVERWRITES the entire file. Use edit_file for surgical changes to existing files. "
+            "Always read_file first to verify you have the current content."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -126,7 +150,12 @@ class EditTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Replace exact string in a file. old_str must be unique in the file."
+        return (
+            "Replace an exact string in a file with a new string. "
+            "old_str must appear EXACTLY ONCE in the file (including whitespace and indentation). "
+            "If it matches 0 or 2+ times, the edit fails. Include enough surrounding context "
+            "to make old_str unique. Read the file first to get the exact text."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:

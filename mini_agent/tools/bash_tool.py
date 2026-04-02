@@ -124,7 +124,12 @@ class BashTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Execute a shell command and return stdout/stderr."
+        return (
+            "Execute a shell command in the workspace directory and return stdout/stderr. "
+            "Prefer specialized tools (read_file, edit_file, glob, grep, git_*) over bash when available. "
+            "Destructive commands (rm -rf, mkfs, dd) are blocked. "
+            "Output is capped at 100KB. Commands time out after 120s (max 600s)."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:

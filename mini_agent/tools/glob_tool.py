@@ -21,8 +21,9 @@ class GlobTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Fast file pattern matching. Supports glob patterns like '**/*.py' or 'src/**/*.ts'. "
-            "Returns matching file paths sorted by modification time (newest first)."
+            "Find files by glob pattern. Returns paths sorted by modification time (newest first). "
+            "Use '**/*.py' for recursive Python files, 'src/*.ts' for flat matches. "
+            "Max 500 results. Use this instead of 'bash find' for file discovery."
         )
 
     @property
