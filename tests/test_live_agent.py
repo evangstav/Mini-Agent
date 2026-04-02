@@ -128,8 +128,8 @@ async def test_windowed_read_in_practice(tmp_path):
 
 @pytest.mark.live
 @pytest.mark.asyncio
-async def test_linter_rejects_bad_edit_directly(tmp_path):
-    """EditTool directly rejects syntax-breaking changes (no LLM involved)."""
+async def test_linter_warns_on_bad_edit_directly(tmp_path):
+    """EditTool warns but writes syntax-breaking changes (SWE-Agent approach)."""
     test_file = tmp_path / "code.py"
     test_file.write_text("def hello():\n    return 'world'\n")
 
@@ -140,10 +140,7 @@ async def test_linter_rejects_bad_edit_directly(tmp_path):
         new_str="return ('world'",  # Unclosed paren — breaks syntax
     )
 
-    # Edit should be rejected
-    assert not result.success, "EditTool should reject syntax-breaking edit"
-    assert "syntax" in result.error.lower()
-
-    # File should be unchanged
-    content = test_file.read_text()
-    assert content == "def hello():\n    return 'world'\n", "File should be unchanged after rejected edit"
+    # Edit succeeds with a warning (allows multi-step edits)
+    assert result.success, "EditTool should warn but write"
+    assert "WARNING" in result.content
+    assert "syntax" in result.content.lower()

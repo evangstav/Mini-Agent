@@ -208,7 +208,20 @@ class Agent:
                 # Act: execute tool calls, Observe: collect results
                 async for event in self._executor.execute_batch(response.tool_calls, self.token_usage):
                     yield event
-                self.log.extend(self._executor.result_messages)
+
+                # Add step counter to last result message so the LLM knows its budget
+                result_msgs = self._executor.result_messages
+                if result_msgs:
+                    last = result_msgs[-1]
+                    remaining = self.max_steps - step - 1
+                    step_info = f"\n[Step {step + 1}/{self.max_steps} — {remaining} steps remaining]"
+                    content = last.content if isinstance(last.content, str) else str(last.content)
+                    from .schema import Message
+                    result_msgs[-1] = Message(
+                        role=last.role, content=content + step_info,
+                        tool_call_id=last.tool_call_id, name=last.name,
+                    )
+                self.log.extend(result_msgs)
 
                 # Write session memory snapshot if due
                 token_est = self.log.estimate_tokens()

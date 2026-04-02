@@ -236,23 +236,20 @@ class EditTool(Tool):
 
             new_content = content.replace(old_str, new_str, 1)
 
-            # Lint check: validate syntax before writing
-            lint_error = _lint_file(file_path, new_content)
-            if lint_error:
-                # Don't write the broken file — return the error so the agent can fix it
-                return ToolResult(
-                    success=False,
-                    error=f"Edit would break syntax — reverted. {lint_error}. "
-                          f"Fix the new_str and try again.",
-                )
+            # Lint check: check for NEW syntax errors (SWE-Agent approach: warn but write)
+            old_lint = _lint_file(file_path, content)
+            new_lint = _lint_file(file_path, new_content)
+            lint_warning = ""
+            if new_lint and new_lint != old_lint:
+                lint_warning = f" WARNING: {new_lint}"
 
             file_path.write_text(new_content, encoding="utf-8")
 
-            # Verification nudge: remind agent to test after code changes
+            # Verification nudge for code files
             verify_hint = ""
             if file_path.suffix in (".py", ".js", ".ts", ".go", ".rs"):
-                verify_hint = " Consider running tests to verify this change."
+                verify_hint = " Run tests to verify this change."
 
-            return ToolResult(success=True, content=f"Successfully edited {file_path}{verify_hint}")
+            return ToolResult(success=True, content=f"Successfully edited {file_path}{lint_warning}{verify_hint}")
         except Exception as e:
             return ToolResult(success=False, error=str(e))

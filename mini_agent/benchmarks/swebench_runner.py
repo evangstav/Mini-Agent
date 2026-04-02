@@ -32,22 +32,41 @@ from ..tools.grep_tool import GrepTool
 logger = logging.getLogger(__name__)
 
 SWEBENCH_SYSTEM_PROMPT = """\
-You are an expert software engineer solving a GitHub issue.
+You are an expert software engineer solving a GitHub issue. Follow these phases strictly.
 
-Instructions:
-1. Read the problem statement carefully.
-2. Explore the repository to understand the codebase structure.
-3. Locate the relevant source files.
-4. Understand the root cause of the bug or the feature request.
-5. Implement a fix using the available tools.
-6. Verify your fix is correct by reading the changed files.
+## Phase 1: EXPLORE (first 5-8 steps)
+- Read the issue carefully. Identify what behavior is wrong and what is expected.
+- Run `find . -type f -name "*.py" | head -20` or use glob to understand the repo structure.
+- Read the README or setup.py/pyproject.toml to understand the project.
+- DO NOT edit any files yet.
 
-Rules:
-- Only modify files that are necessary to fix the issue.
-- Do not add tests unless the issue specifically requests them.
-- Do not modify test files unless the fix requires it.
-- Keep changes minimal and focused.
+## Phase 2: LOCALIZE (next 3-5 steps)
+- Search for relevant code using grep with specific terms from the issue.
+- Read the files that are most likely to contain the bug.
+- Identify the exact function/method and line range that needs to change.
+- Think about the root cause before proposing a fix.
+
+## Phase 3: REPRODUCE (1-2 steps, if possible)
+- Write a small script that demonstrates the bug, then run it.
+- If the issue mentions specific test commands, run them to see the failure.
+- This confirms you understand the bug correctly.
+
+## Phase 4: FIX (2-5 steps)
+- Make the minimal change needed to fix the issue.
+- If you need to add an import, do it in a separate edit.
+- Keep changes focused — do not refactor unrelated code.
+
+## Phase 5: VERIFY (2-3 steps)
+- Re-read the changed file to confirm your edit looks correct.
+- Run the reproduction script or tests to confirm the fix works.
+- Run `python -m pytest <relevant_test_file> -x` if tests exist.
+
+## Rules
+- Only modify source files, not test files (unless the issue requires it).
 - Only state facts you have verified by reading files.
+- If you cannot find the relevant code, say so — do not guess.
+- Keep changes minimal. One-line fixes are preferred when correct.
+- If an edit introduces a syntax warning, fix it in the next step.
 """
 
 
@@ -60,7 +79,7 @@ class SWEBenchRunner:
         provider: str | None = None,
         api_key: str | None = None,
         api_base: str | None = None,
-        max_steps: int = 30,
+        max_steps: int = 50,
     ) -> None:
         from ..llm import auto_detect_provider
         detected_key, detected_model, detected_base, detected_provider = auto_detect_provider()
@@ -121,6 +140,18 @@ class SWEBenchRunner:
             logger.error("Timeout cloning %s: %s", repo, e)
             return False
 
+    def _setup_repo(self, workdir: Path) -> None:
+        """Install repo in development mode so tests can run."""
+        try:
+            # Try pip install -e . (works for most Python repos)
+            subprocess.run(
+                ["pip", "install", "-e", "."],
+                cwd=str(workdir), capture_output=True, timeout=300,
+            )
+            logger.info("Installed repo via pip install -e .")
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            logger.warning("Could not install repo dependencies")
+
     def _get_diff(self, workdir: Path) -> str:
         """Capture git diff from the working directory."""
         try:
@@ -151,6 +182,9 @@ class SWEBenchRunner:
                 "model_name_or_path": f"mini-agent-{self.model}",
                 "model_patch": "",
             }
+
+        # Install repo dependencies so tests can run
+        self._setup_repo(workdir)
 
         # Create agent with tools scoped to the repo
         llm = self._make_llm()

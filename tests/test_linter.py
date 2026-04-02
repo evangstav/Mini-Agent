@@ -59,8 +59,8 @@ class TestLintFile:
 
 class TestEditToolLinting:
     @pytest.mark.asyncio
-    async def test_edit_rejects_syntax_breaking_change(self, tmp_path):
-        """EditTool should reject edits that break Python syntax."""
+    async def test_edit_warns_on_syntax_breaking_change(self, tmp_path):
+        """EditTool should warn (but write) on syntax-breaking edits (SWE-Agent approach)."""
         f = tmp_path / "test.py"
         f.write_text("def foo():\n    return 1\n", encoding="utf-8")
 
@@ -71,10 +71,12 @@ class TestEditToolLinting:
             new_str="return (",  # Breaks syntax
         )
 
-        assert not result.success
-        assert "syntax" in result.error.lower()
-        # File should be UNCHANGED
-        assert f.read_text() == "def foo():\n    return 1\n"
+        # Edit succeeds but with a warning (allows multi-step edits)
+        assert result.success
+        assert "WARNING" in result.content
+        assert "syntax" in result.content.lower()
+        # File IS written (agent can fix in next step)
+        assert "return (" in f.read_text()
 
     @pytest.mark.asyncio
     async def test_edit_accepts_valid_change(self, tmp_path):
