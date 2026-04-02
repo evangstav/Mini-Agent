@@ -320,11 +320,13 @@ class SystemPromptBuilder:
         project_dir: str | None = None,
         memory_budget: int = 4000,
         instructions_budget: int = 8000,
+        repo_map_budget: int = 6000,
     ):
         self.base_prompt = base_prompt
         self.project_dir = project_dir or os.getcwd()
         self.memory_budget = memory_budget
         self.instructions_budget = instructions_budget
+        self.repo_map_budget = repo_map_budget
 
     def build(self) -> str:
         """Assemble the full system prompt."""
@@ -333,6 +335,10 @@ class SystemPromptBuilder:
         instructions = self._discover_claude_instructions()
         if instructions:
             parts.append(f"\n\n# Project Instructions\n\n{instructions}")
+
+        repo_map = self._generate_repo_map()
+        if repo_map:
+            parts.append(f"\n\n# Codebase Structure\n\n{repo_map}")
 
         memories = self._load_memories()
         if memories:
@@ -343,6 +349,18 @@ class SystemPromptBuilder:
             parts.append(f"\n\n# Git Context\n\n{git_info}")
 
         return "\n".join(parts)
+
+    def _generate_repo_map(self) -> str | None:
+        """Generate a compact codebase skeleton for structural awareness."""
+        from .repo_map import generate_repo_map
+        try:
+            skeleton = generate_repo_map(
+                self.project_dir, max_chars=self.repo_map_budget
+            )
+            return skeleton if skeleton else None
+        except Exception as e:
+            logger.warning("Repo map generation failed: %s", e)
+            return None
 
     def _load_memories(self) -> str | None:
         """Load persistent memory files from the memory directory.

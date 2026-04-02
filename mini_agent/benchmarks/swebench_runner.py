@@ -200,9 +200,16 @@ class SWEBenchRunner:
             BashTool(workspace_dir=str(workdir)),
         ]
 
+        # Generate repo map for structural awareness
+        from ..repo_map import generate_repo_map
+        repo_skeleton = generate_repo_map(str(workdir), max_chars=6000, cache=False)
+        system_prompt = SWEBENCH_SYSTEM_PROMPT
+        if repo_skeleton:
+            system_prompt += f"\n\n# Repository Structure\n\n{repo_skeleton}"
+
         agent = Agent(
             llm_client=llm,
-            system_prompt=SWEBENCH_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             tools=tools,
             max_steps=self.max_steps,
             sandbox=Sandbox(PermissionMode.FULL_ACCESS),
@@ -211,7 +218,8 @@ class SWEBenchRunner:
         agent.add_user_message(
             f"## GitHub Issue\n\n{problem}\n\n"
             f"The repository is checked out at `{workdir}`. "
-            f"Explore the code, find the root cause, and fix the issue."
+            f"Use the codebase structure above to navigate efficiently. "
+            f"Find the root cause and fix the issue."
         )
 
         # Run the agent
