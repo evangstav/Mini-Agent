@@ -69,7 +69,7 @@ class ToolResultStore:
 # --- Token Estimation ---
 
 def estimate_tokens(messages: list[Message]) -> int:
-    """Rough token estimate: ~3 chars per token (conservative for code-heavy context)."""
+    """Conservative token estimate: ~4 chars per token (tuned for code-heavy context)."""
     total_chars = 0
     for msg in messages:
         if isinstance(msg.content, str):
@@ -80,7 +80,7 @@ def estimate_tokens(messages: list[Message]) -> int:
             total_chars += len(msg.thinking)
         if msg.tool_calls:
             total_chars += len(json.dumps([tc.model_dump() for tc in msg.tool_calls]))
-    return total_chars // 3
+    return total_chars // 4
 
 
 # --- Tool Result Pruning ---
@@ -422,7 +422,8 @@ class SystemPromptBuilder:
             content = content[:remaining] + f"\n\n[... {label} truncated]"
 
         sections.append(f"## {label}\n\n{content}")
-        return chars_used + len(content)
+        # Use min to avoid overshooting the budget by the truncation suffix
+        return chars_used + min(len(content), remaining)
 
     def _get_git_info(self) -> str | None:
         """Get current branch and recent commits."""

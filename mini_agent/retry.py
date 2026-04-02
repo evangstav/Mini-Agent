@@ -45,9 +45,19 @@ def is_retryable(exc: Exception) -> bool:
     if isinstance(exc, TransientError):
         return True
 
-    # Check for timeout errors
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)):
+    # Check for timeout and connection errors
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError)):
         return True
+
+    # OSError: only retry transient network errors, not permanent ones (EPERM, ENOENT)
+    if isinstance(exc, OSError):
+        import errno
+        transient_errnos = {
+            errno.ETIMEDOUT, errno.ECONNRESET, errno.ECONNREFUSED,
+            errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ECONNABORTED,
+            errno.ENOTCONN,
+        }
+        return exc.errno in transient_errnos
 
     # Check HTTP status codes from common API libraries
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None)

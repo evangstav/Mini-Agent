@@ -88,7 +88,7 @@ class MessageLog:
         return new_log
 
     def estimate_tokens(self) -> int:
-        """Rough token estimate: ~3 chars per token."""
+        """Conservative token estimate: ~4 chars per token (tuned for code-heavy context)."""
         total_chars = 0
         for msg in self._messages:
             if isinstance(msg.content, str):
@@ -99,4 +99,4 @@ class MessageLog:
                 total_chars += len(msg.thinking)
             if msg.tool_calls:
                 total_chars += len(json.dumps([tc.model_dump() for tc in msg.tool_calls]))
-        return total_chars // 3
+        return total_chars // 4
