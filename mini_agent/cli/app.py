@@ -52,6 +52,21 @@ def build_parser() -> argparse.ArgumentParser:
     # version
     sub.add_parser("version", help="Show version")
 
+    # bench
+    bench_parser = sub.add_parser("bench", help="Run benchmarks")
+    bench_sub = bench_parser.add_subparsers(dest="bench_command")
+
+    swe_parser = bench_sub.add_parser("swebench", help="Run SWE-bench Verified")
+    swe_parser.add_argument("--slice", default=None, help="Instance range, e.g. '0:5' (default: all)")
+    swe_parser.add_argument("--subset", default="verified", choices=["verified", "lite", "full"],
+                            help="Dataset subset (default: verified)")
+    swe_parser.add_argument("--max-steps", type=int, default=30, help="Max agent steps per instance")
+    swe_parser.add_argument("--output", default="predictions.jsonl", help="Output file")
+
+    he_parser = bench_sub.add_parser("humaneval", help="Run HumanEval+")
+    he_parser.add_argument("--slice", default=None, help="Problem range, e.g. '0:5'")
+    he_parser.add_argument("--output", default="humaneval_results.jsonl", help="Output file")
+
     return parser
 
 
@@ -166,6 +181,49 @@ async def _async_repl(args: argparse.Namespace, session_file: str | None = None)
     await launch_repl(ctx)
 
 
+def _cmd_bench(args: argparse.Namespace) -> None:
+    import logging
+    if args.verbose:
+        logging.basicConfig(level=logging.INFO)
+
+    bench = args.bench_command
+
+    if bench == "swebench":
+        from ..benchmarks.swebench_runner import SWEBenchRunner
+        runner = SWEBenchRunner(
+            model=args.model or "MiniMax-M2.7",
+            provider=args.provider,
+            api_key=args.api_key,
+            api_base=args.api_base,
+            max_steps=getattr(args, "max_steps", 30),
+        )
+        out = asyncio.run(runner.run_dataset(
+            subset=args.subset,
+            slice_range=args.slice,
+            output_path=args.output,
+        ))
+        console.print(f"[success]Predictions written to[/] {out}")
+        console.print("[info]Evaluate with: sb-cli submit or swebench.harness.run_evaluation[/]")
+
+    elif bench == "humaneval":
+        from ..benchmarks.humaneval_runner import HumanEvalRunner
+        runner = HumanEvalRunner(
+            model=args.model or "MiniMax-M2.7",
+            provider=args.provider,
+            api_key=args.api_key,
+            api_base=args.api_base,
+        )
+        out = asyncio.run(runner.run_all(
+            slice_range=args.slice,
+            output_path=args.output,
+        ))
+        console.print(f"[success]Results written to[/] {out}")
+        console.print("[info]Evaluate with: evalplus.evaluate --dataset humaneval --samples " + str(out) + "[/]")
+
+    else:
+        console.print("[info]Available benchmarks: swebench, humaneval[/]")
+
+
 def main() -> None:
     """Parse args and dispatch."""
     parser = build_parser()
@@ -189,6 +247,8 @@ def main() -> None:
             _cmd_session_load(args)
         else:
             _cmd_session_list(args)
+    elif cmd == "bench":
+        _cmd_bench(args)
     else:
         # Default: launch REPL (no subcommand or "chat")
         asyncio.run(_async_repl(args))
