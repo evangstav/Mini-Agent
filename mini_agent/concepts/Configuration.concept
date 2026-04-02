@@ -1,12 +1,13 @@
 concept Configuration
   purpose
-    Resolve agent settings from a hierarchy of configuration layers where later layers override earlier ones.
+    Resolve agent settings from a hierarchy of configuration layers where later layers override earlier ones, with automatic provider detection from environment.
 
   state
     layers: set Layer
     global_layer: layers
     project_layer: layers
     cli_layer: layers
+    env_layer: layers
     priority: layers -> one Int
     settings: layers -> set Setting
     resolved: set Setting
@@ -17,8 +18,11 @@ concept Configuration
     load_layer (l: Layer, p: Int, entries: set Setting)
       post: layers += l; priority(l) = p; settings(l) = entries
 
+    detect_from_env ()
+      post: reads API key env vars, infers provider, model, and api_base from which key is set
+
     resolve ()
-      post: for each key across all layers, resolved contains the setting from the highest-priority layer
+      post: for each key across all layers, resolved contains the setting from the highest-priority layer; env detection fills defaults for unset values
 
     override (k: String, v: Value)
       post: resolved setting for k updated to v

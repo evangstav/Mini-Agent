@@ -56,28 +56,26 @@ class SWEBenchRunner:
 
     def __init__(
         self,
-        model: str = "MiniMax-M2.7",
-        provider: str = "anthropic",
+        model: str | None = None,
+        provider: str | None = None,
         api_key: str | None = None,
         api_base: str | None = None,
         max_steps: int = 30,
     ) -> None:
-        self.model = model
-        self.provider = provider
-        self.api_key = api_key or os.environ.get("MINIMAX_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or ""
-        self.api_base = api_base
+        from ..llm import auto_detect_provider
+        detected_key, detected_model, detected_base, detected_provider = auto_detect_provider()
+
+        self.api_key = api_key or detected_key
+        self.model = model or detected_model
+        self.api_base = api_base or detected_base
+        self.provider = LLMProvider(provider) if provider else detected_provider
         self.max_steps = max_steps
 
-        if not self.api_key:
-            raise ValueError("No API key found. Set MINIMAX_API_KEY or ANTHROPIC_API_KEY.")
-
     def _make_llm(self) -> LLMClient:
-        is_minimax = bool(os.environ.get("MINIMAX_API_KEY"))
-        api_base = self.api_base or ("https://api.minimax.io" if is_minimax else "https://api.anthropic.com")
         return LLMClient(
             api_key=self.api_key,
-            provider=LLMProvider(self.provider),
-            api_base=api_base,
+            provider=self.provider,
+            api_base=self.api_base,
             model=self.model,
         )
 

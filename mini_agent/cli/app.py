@@ -191,8 +191,8 @@ def _cmd_bench(args: argparse.Namespace) -> None:
     if bench == "swebench":
         from ..benchmarks.swebench_runner import SWEBenchRunner
         runner = SWEBenchRunner(
-            model=args.model or "MiniMax-M2.7",
-            provider=args.provider,
+            model=args.model,
+            provider=args.provider if args.provider != "anthropic" else None,
             api_key=args.api_key,
             api_base=args.api_base,
             max_steps=getattr(args, "max_steps", 30),
@@ -208,8 +208,8 @@ def _cmd_bench(args: argparse.Namespace) -> None:
     elif bench == "humaneval":
         from ..benchmarks.humaneval_runner import HumanEvalRunner
         runner = HumanEvalRunner(
-            model=args.model or "MiniMax-M2.7",
-            provider=args.provider,
+            model=args.model,
+            provider=args.provider if args.provider != "anthropic" else None,
             api_key=args.api_key,
             api_base=args.api_base,
         )

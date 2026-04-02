@@ -89,23 +89,18 @@ async def build_repl_context(
     )
     cfg = load_config(project_dir=workspace, cli_overrides=cli_overrides)
 
-    # Auto-detect API key and provider
-    minimax_key = os.environ.get("MINIMAX_API_KEY", "")
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    api_key = api_key or minimax_key or anthropic_key or ""
-    if not api_key:
+    # Auto-detect API key, provider, model, and base URL
+    from ..llm import auto_detect_provider
+    try:
+        detected_key, detected_model, detected_base, detected_provider = auto_detect_provider()
+    except ValueError:
         console.print("[error]Error:[/] Set MINIMAX_API_KEY or ANTHROPIC_API_KEY environment variable.")
         sys.exit(1)
 
-    is_minimax = bool(minimax_key) and api_key == minimax_key
-    provider = cfg.provider or provider
-    provider_enum = LLMProvider(provider)
-    model = cfg.model or os.environ.get("MINI_AGENT_MODEL") or (
-        "MiniMax-M2.7" if is_minimax else "claude-sonnet-4-20250514"
-    )
-    api_base = cfg.api_base or os.environ.get("MINI_AGENT_API_BASE") or (
-        "https://api.minimax.io" if is_minimax else "https://api.anthropic.com"
-    )
+    api_key = api_key or detected_key
+    provider_enum = LLMProvider(cfg.provider) if cfg.provider else detected_provider
+    model = cfg.model or os.environ.get("MINI_AGENT_MODEL") or model or detected_model
+    api_base = cfg.api_base or os.environ.get("MINI_AGENT_API_BASE") or api_base or detected_base
     max_steps = cfg.max_steps or max_steps
     enable_permissions = cfg.permissions if cfg.permissions is not None else enable_permissions
 
