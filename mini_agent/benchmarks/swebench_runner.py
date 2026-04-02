@@ -72,7 +72,7 @@ class SWEBenchRunner:
             raise ValueError("No API key found. Set MINIMAX_API_KEY or ANTHROPIC_API_KEY.")
 
     def _make_llm(self) -> LLMClient:
-        is_minimax = "minimax" in self.api_key.lower() or "MINIMAX" in os.environ.get("MINIMAX_API_KEY", "")
+        is_minimax = bool(os.environ.get("MINIMAX_API_KEY"))
         api_base = self.api_base or ("https://api.minimax.io" if is_minimax else "https://api.anthropic.com")
         return LLMClient(
             api_key=self.api_key,
@@ -83,20 +83,44 @@ class SWEBenchRunner:
 
     def _checkout_repo(self, repo: str, base_commit: str, workdir: Path) -> bool:
         """Clone a repo and checkout the specified commit."""
+        repo_url = f"https://github.com/{repo}.git"
         try:
-            # Clone with depth 1 for speed, then fetch the specific commit
-            repo_url = f"https://github.com/{repo}.git"
+            # Try shallow clone first (fast), then deepen if commit not found
             subprocess.run(
-                ["git", "clone", "--depth", "50", repo_url, str(workdir)],
-                capture_output=True, timeout=120, check=True,
+                ["git", "clone", "--depth", "1", repo_url, str(workdir)],
+                capture_output=True, timeout=300, check=True,
+            )
+            # Fetch the specific commit
+            subprocess.run(
+                ["git", "fetch", "origin", base_commit],
+                cwd=str(workdir), capture_output=True, timeout=300, check=True,
             )
             subprocess.run(
                 ["git", "checkout", base_commit],
                 cwd=str(workdir), capture_output=True, timeout=30, check=True,
             )
             return True
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.error("Failed to checkout %s@%s: %s", repo, base_commit, e)
+        except subprocess.CalledProcessError:
+            # Shallow fetch failed — fall back to full clone
+            logger.info("Shallow fetch failed for %s@%s, doing full clone...", repo, base_commit[:8])
+            import shutil
+            if workdir.exists():
+                shutil.rmtree(workdir)
+            try:
+                subprocess.run(
+                    ["git", "clone", repo_url, str(workdir)],
+                    capture_output=True, timeout=600, check=True,
+                )
+                subprocess.run(
+                    ["git", "checkout", base_commit],
+                    cwd=str(workdir), capture_output=True, timeout=30, check=True,
+                )
+                return True
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                logger.error("Failed to checkout %s@%s: %s", repo, base_commit, e)
+                return False
+        except subprocess.TimeoutExpired as e:
+            logger.error("Timeout cloning %s: %s", repo, e)
             return False
 
     def _get_diff(self, workdir: Path) -> str:
