@@ -17,6 +17,7 @@ from mini_agent.events import (
     ToolEnd,
     ToolStart,
 )
+from mini_agent.sandbox import Decision, PermissionMode, Sandbox
 from mini_agent.schema import FunctionCall, LLMResponse, Message, StreamDelta, ToolCall
 from mini_agent.tools.base import Tool, ToolResult
 
@@ -257,7 +258,12 @@ async def test_stream_tool_lifecycle():
     ])
 
     tool = MockTool()
-    agent = Agent(llm_client=mock_llm, system_prompt="Test", tools=[tool])
+    agent = Agent(
+        llm_client=mock_llm,
+        system_prompt="Test",
+        tools=[tool],
+        sandbox=Sandbox(PermissionMode.FULL_ACCESS),  # Skip permission gating for tool lifecycle test
+    )
     agent.add_user_message("Use the tool")
 
     events = [event async for event in agent.run_stream()]
@@ -284,7 +290,11 @@ async def test_stream_tool_lifecycle():
 
 @pytest.mark.asyncio
 async def test_stream_unknown_tool():
-    """Test run_stream yields ToolEnd with error for unknown tools."""
+    """Test run_stream yields ToolEnd with error for unknown tools.
+    
+    Uses FULL_ACCESS to bypass permission gating and reach execution phase
+    where unknown tools are detected.
+    """
     mock_llm = _make_stream_mock([
         LLMResponse(
             content="",
@@ -300,7 +310,12 @@ async def test_stream_unknown_tool():
         LLMResponse(content="OK", finish_reason="stop"),
     ])
 
-    agent = Agent(llm_client=mock_llm, system_prompt="Test", tools=[])
+    agent = Agent(
+        llm_client=mock_llm,
+        system_prompt="Test",
+        tools=[],
+        sandbox=Sandbox(PermissionMode.FULL_ACCESS),  # Skip permission gating
+    )
     agent.add_user_message("Do it")
 
     events = [event async for event in agent.run_stream()]
@@ -555,7 +570,16 @@ async def test_execute_plan_runs_tools():
     ])
 
     tool = MockTool()
-    agent = Agent(llm_client=mock_llm, system_prompt="Test", tools=[tool])
+    
+    async def allow_all_permissions(tool_name: str, arguments: dict) -> Decision:
+        return Decision.ALLOW
+    
+    agent = Agent(
+        llm_client=mock_llm,
+        system_prompt="Test",
+        tools=[tool],
+        permission_callback=allow_all_permissions,
+    )
     agent.add_user_message("Plan something")
 
     # Phase 1: plan mode

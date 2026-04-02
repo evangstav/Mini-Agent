@@ -71,7 +71,7 @@ async def build_repl_context(
     api_base: str | None = None,
     workspace: str | None = None,
     system_prompt: str | None = None,
-    max_steps: int = 50,
+    max_steps: int = 100,
     session_file: str | None = None,
     enable_permissions: bool = True,
     verbose: bool = False,
@@ -84,7 +84,7 @@ async def build_repl_context(
         model=model,
         provider=provider if provider != "anthropic" else None,
         api_base=api_base,
-        max_steps=max_steps if max_steps != 50 else None,
+        max_steps=max_steps if max_steps != 100 else None,
         permissions=False if not enable_permissions else None,
     )
     cfg = load_config(project_dir=workspace, cli_overrides=cli_overrides)

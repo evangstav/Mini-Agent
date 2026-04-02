@@ -89,7 +89,7 @@ def _cmd_config_show(args: argparse.Namespace) -> None:
     table.add_row("model", cfg.model or "(default)")
     table.add_row("provider", cfg.provider or "anthropic")
     table.add_row("api_base", cfg.api_base or "(default)")
-    table.add_row("max_steps", str(cfg.max_steps) if cfg.max_steps else "50")
+    table.add_row("max_steps", str(cfg.max_steps) if cfg.max_steps else "100")
     table.add_row("permissions", str(cfg.permissions) if cfg.permissions is not None else "true")
     table.add_row("tools", ", ".join(cfg.tools) if cfg.tools else "(all)")
     table.add_row("workspace", workspace)
@@ -114,7 +114,7 @@ def _cmd_config_init(args: argparse.Namespace) -> None:
 # model = "claude-sonnet-4-20250514"
 # provider = "anthropic"
 # api_base = "https://api.anthropic.com"
-# max_steps = 50
+# max_steps = 100
 # permissions = true
 # tools = ["read_file", "write_file", "edit_file", "bash", "glob", "grep"]
 

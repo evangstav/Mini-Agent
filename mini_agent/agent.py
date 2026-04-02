@@ -46,7 +46,7 @@ class Agent:
         llm_client: LLMClient,
         system_prompt: str,
         tools: list[Tool],
-        max_steps: int = 50,
+        max_steps: int = 100,
         tool_result_store: ToolResultStore | None = None,
         compact_threshold: int | None = None,
         context_window: int = 200_000,
