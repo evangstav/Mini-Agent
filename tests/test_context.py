@@ -33,8 +33,8 @@ class TestToolResultStore:
         content = "x" * 200
         result = store.store_if_large(content, "call_2")
 
-        assert "truncated" in result
-        assert "200 chars total" in result
+        assert "truncated" in result.lower() or "Truncated" in result
+        assert "200 chars" in result
         assert result.startswith("x" * 50)
 
     def test_large_result_retrievable(self, tmp_path):

@@ -37,13 +37,14 @@ class ToolResultStore:
         result_path = self.storage_dir / f"{file_hash}.txt"
         result_path.write_text(content, encoding="utf-8")
 
-        # Return preview with reference
+        # Return preview without file path (prevents LLM from re-reading the stored file)
         preview = content[: self.preview_chars]
         total_chars = len(content)
         return (
             f"{preview}\n\n"
-            f"[... truncated — {total_chars} chars total, "
-            f"full result stored at {result_path}]"
+            f"[Output truncated at {self.preview_chars} chars. "
+            f"Total: {total_chars} chars. "
+            f"Re-run the original tool command if you need the full output.]"
         )
 
     def retrieve(self, tool_call_id: str) -> str | None:

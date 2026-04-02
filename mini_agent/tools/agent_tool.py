@@ -43,12 +43,14 @@ class AgentTool(Tool):
         permission_callback: Callable[[str, dict[str, Any]], Coroutine[Any, Any, bool]] | None = None,
         max_steps: int = _DEFAULT_MAX_STEPS,
         system_prompt: str | None = None,
+        workspace: str | None = None,
     ):
         self._llm_client = llm_client
         self._available_tools = available_tools
         self._sandbox = sandbox
         self._permission_callback = permission_callback
         self._max_steps = max_steps
+        self._workspace = workspace
         self._system_prompt = system_prompt or (
             "You are a focused sub-agent. Complete the given task using "
             "the tools available to you, then respond with your result."
@@ -139,6 +141,7 @@ class AgentTool(Tool):
             max_steps=resolved_steps,
             permission_callback=self._permission_callback,
             sandbox=self._sandbox,
+            project_dir=self._workspace,
         )
 
         sub_agent.add_user_message(prompt)

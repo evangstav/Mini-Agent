@@ -40,6 +40,18 @@ from .render import EventRenderer, console
 logger = logging.getLogger(__name__)
 
 
+def _detect_project_root(start: str) -> str:
+    """Walk up to find project root (contains pyproject.toml or .git)."""
+    current = Path(start).resolve()
+    while True:
+        if (current / "pyproject.toml").exists() or (current / ".git").exists():
+            return str(current)
+        parent = current.parent
+        if parent == current:
+            return start
+        current = parent
+
+
 def build_command_registry() -> SlashCommandRegistry:
     """Build and populate the slash command registry."""
     registry = SlashCommandRegistry()
@@ -66,7 +78,7 @@ async def build_repl_context(
 ) -> REPLContext:
     """Resolve config, create LLM client, tools, agent, and return a REPLContext."""
     setup_logging(verbose=verbose)
-    workspace = workspace or os.getcwd()
+    workspace = workspace or _detect_project_root(os.getcwd())
 
     cli_overrides = MiniAgentConfig(
         model=model,
@@ -131,7 +143,12 @@ async def build_repl_context(
     default_prompt = system_prompt or (
         "You are a helpful coding assistant. You have access to tools for "
         "reading/writing files, running shell commands, and more. "
-        "Work step by step and verify your changes."
+        "Work step by step and verify your changes.\n\n"
+        "IMPORTANT: Only state facts you have verified by reading files or "
+        "running commands. If you cannot find evidence for a claim, say so "
+        "explicitly. Never fabricate code snippets, file contents, or test "
+        "results. When search results return no matches, report that — do "
+        "not infer what the missing content 'probably' contains."
     )
 
     tool_result_store = ToolResultStore(
@@ -158,6 +175,7 @@ async def build_repl_context(
         sandbox=sandbox,
         permission_callback=perm_cb,
         max_steps=max_steps,
+        workspace=workspace,
     )
     tools.append(agent_tool)
 

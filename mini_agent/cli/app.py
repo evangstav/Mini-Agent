@@ -63,7 +63,8 @@ def _cmd_config_show(args: argparse.Namespace) -> None:
     from ..config import load_config
     from rich.table import Table
 
-    workspace = args.workspace or os.getcwd()
+    from .setup import _detect_project_root
+    workspace = args.workspace or _detect_project_root(os.getcwd())
     cfg = load_config(project_dir=workspace)
 
     table = Table(title="Resolved Configuration", show_header=True)
@@ -82,7 +83,8 @@ def _cmd_config_show(args: argparse.Namespace) -> None:
 
 
 def _cmd_config_init(args: argparse.Namespace) -> None:
-    workspace = args.workspace or os.getcwd()
+    from .setup import _detect_project_root
+    workspace = args.workspace or _detect_project_root(os.getcwd())
     path = Path(workspace) / ".mini-agent.toml"
 
     if path.exists():
@@ -111,7 +113,8 @@ def _cmd_config_init(args: argparse.Namespace) -> None:
 
 
 def _cmd_session_list(args: argparse.Namespace) -> None:
-    workspace = args.workspace or os.getcwd()
+    from .setup import _detect_project_root
+    workspace = args.workspace or _detect_project_root(os.getcwd())
     runtime = Path(workspace) / ".runtime"
 
     if not runtime.exists():
