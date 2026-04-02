@@ -1,9 +1,46 @@
 """File operation tools."""
 
+import ast
+import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from .base import Tool, ToolResult
+
+
+# Linter-integrated editing: validate syntax after modifications.
+# SWE-Agent research (NeurIPS 2024) shows rejecting invalid edits prevents cascading failures.
+
+_LINTERS: dict[str, Any] = {}  # extension -> checker function
+
+
+def _check_python_syntax(path: Path, content: str) -> str | None:
+    """Check Python syntax. Returns error message or None if valid."""
+    try:
+        ast.parse(content, filename=str(path))
+        return None
+    except SyntaxError as e:
+        return f"Python syntax error at line {e.lineno}: {e.msg}"
+
+
+def _check_json_syntax(path: Path, content: str) -> str | None:
+    """Check JSON syntax. Returns error message or None if valid."""
+    try:
+        json.loads(content)
+        return None
+    except json.JSONDecodeError as e:
+        return f"JSON syntax error at line {e.lineno}: {e.msg}"
+
+
+def _lint_file(path: Path, content: str) -> str | None:
+    """Run syntax check based on file extension. Returns error or None."""
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        return _check_python_syntax(path, content)
+    elif suffix == ".json":
+        return _check_json_syntax(path, content)
+    return None  # No linter for this file type
 
 
 def _validate_path(file_path: Path, workspace_dir: Path) -> str | None:
@@ -133,7 +170,11 @@ class WriteTool(Tool):
 
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
-            return ToolResult(success=True, content=f"Successfully wrote to {file_path}")
+
+            # Lint check: warn (but don't fail) for syntax issues in written files
+            lint_error = _lint_file(file_path, content)
+            warning = f" WARNING: {lint_error}" if lint_error else ""
+            return ToolResult(success=True, content=f"Successfully wrote to {file_path}{warning}")
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
@@ -193,7 +234,25 @@ class EditTool(Tool):
                           f"Provide more surrounding context to disambiguate.",
                 )
 
-            file_path.write_text(content.replace(old_str, new_str, 1), encoding="utf-8")
-            return ToolResult(success=True, content=f"Successfully edited {file_path}")
+            new_content = content.replace(old_str, new_str, 1)
+
+            # Lint check: validate syntax before writing
+            lint_error = _lint_file(file_path, new_content)
+            if lint_error:
+                # Don't write the broken file — return the error so the agent can fix it
+                return ToolResult(
+                    success=False,
+                    error=f"Edit would break syntax — reverted. {lint_error}. "
+                          f"Fix the new_str and try again.",
+                )
+
+            file_path.write_text(new_content, encoding="utf-8")
+
+            # Verification nudge: remind agent to test after code changes
+            verify_hint = ""
+            if file_path.suffix in (".py", ".js", ".ts", ".go", ".rs"):
+                verify_hint = " Consider running tests to verify this change."
+
+            return ToolResult(success=True, content=f"Successfully edited {file_path}{verify_hint}")
         except Exception as e:
             return ToolResult(success=False, error=str(e))

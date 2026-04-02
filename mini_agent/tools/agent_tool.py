@@ -53,7 +53,12 @@ class AgentTool(Tool):
         self._workspace = workspace
         self._system_prompt = system_prompt or (
             "You are a focused sub-agent. Complete the given task using "
-            "the tools available to you, then respond with your result."
+            "the tools available to you, then respond with your result.\n\n"
+            "Rules:\n"
+            "- Only state facts verified by reading files or running commands.\n"
+            "- If you cannot find something, say so. Never fabricate.\n"
+            "- After code changes, run tests to verify.\n"
+            "- Keep your output concise and factual."
         )
 
     @property
