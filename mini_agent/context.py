@@ -338,7 +338,12 @@ class SystemPromptBuilder:
 
         repo_map = self._generate_repo_map()
         if repo_map:
-            parts.append(f"\n\n# Codebase Structure\n\n{repo_map}")
+            parts.append(
+                "\n\n# Codebase Structure (read-only context)\n\n"
+                "_This is an auto-generated map of the project for your reference. "
+                "Do NOT edit, delete, or reorganize these files unless the user explicitly asks you to._\n\n"
+                + repo_map
+            )
 
         memories = self._load_memories()
         if memories:

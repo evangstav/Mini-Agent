@@ -210,7 +210,11 @@ class SWEBenchRunner:
         repo_skeleton = generate_repo_map(str(workdir), max_chars=6000, cache=False)
         system_prompt = SWEBENCH_SYSTEM_PROMPT
         if repo_skeleton:
-            system_prompt += f"\n\n# Repository Structure\n\n{repo_skeleton}"
+            system_prompt += (
+                "\n\n# Repository Structure (read-only reference)\n\n"
+                "_Auto-generated map of the repo. Use this to navigate — do not modify this map._\n\n"
+                + repo_skeleton
+            )
 
         agent = Agent(
             llm_client=llm,
