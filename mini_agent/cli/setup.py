@@ -19,7 +19,7 @@ from ..sandbox import PermissionMode, Sandbox
 from ..schema import LLMProvider
 from ..tools.agent_tool import AgentTool
 from ..tools.bash_tool import BashTool, BashKillTool, BashOutputTool
-from ..tools.file_tools import EditTool, ReadTool, WriteTool
+from ..tools.file_tools import EditTool, ReadTool, UndoEditTool, WriteTool
 from ..tools.find_definition import FindDefinitionTool
 from ..tools.git_tool import GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
 from ..tools.glob_tool import GlobTool
@@ -112,6 +112,7 @@ async def build_repl_context(
         ReadTool(workspace_dir=workspace),
         WriteTool(workspace_dir=workspace),
         EditTool(workspace_dir=workspace),
+        UndoEditTool(workspace_dir=workspace),
         BashTool(workspace_dir=workspace),
         BashOutputTool(),
         BashKillTool(),

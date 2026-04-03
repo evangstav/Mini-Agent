@@ -49,6 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
     load_parser = session_sub.add_parser("load", help="Load and resume a session")
     load_parser.add_argument("path", help="Path to session file")
 
+    # run (non-interactive)
+    run_parser = sub.add_parser("run", help="Run a single prompt non-interactively")
+    run_parser.add_argument("prompt", nargs="?", help="The prompt to run (or pipe via stdin)")
+    run_parser.add_argument("--print", "-p", dest="print_output", action="store_true",
+                            help="Print only the final response (no tool output)")
+    run_parser.add_argument("--max-steps", type=int, default=50, help="Max agent steps")
+
     # version
     sub.add_parser("version", help="Show version")
 
@@ -183,6 +190,59 @@ async def _async_repl(args: argparse.Namespace, session_file: str | None = None)
     await launch_repl(ctx)
 
 
+def _cmd_run(args: argparse.Namespace) -> None:
+    """Run a single prompt non-interactively."""
+    import sys
+
+    # Get prompt from arg or stdin
+    prompt = args.prompt
+    if not prompt:
+        if not sys.stdin.isatty():
+            prompt = sys.stdin.read().strip()
+        if not prompt:
+            console.print("[error]Provide a prompt as argument or pipe via stdin.[/]")
+            console.print("[info]Usage: mini-agent run 'fix the bug' or echo 'fix it' | mini-agent run[/]")
+            sys.exit(1)
+
+    async def _run():
+        from .setup import build_repl_context
+        ctx = await build_repl_context(
+            api_key=args.api_key,
+            provider=args.provider,
+            model=args.model,
+            api_base=args.api_base,
+            workspace=args.workspace,
+            system_prompt=args.system_prompt,
+            max_steps=getattr(args, "max_steps", 50),
+            enable_permissions=not args.no_permissions,
+            verbose=args.verbose,
+        )
+        ctx.agent.add_user_message(prompt)
+
+        if getattr(args, "print_output", False):
+            # Print only the final text response
+            result = await ctx.agent.run()
+            print(result)
+        else:
+            # Stream all events with rendering
+            from ..events import AgentDone, AgentError, AgentCancelled
+            import time
+            start = time.monotonic()
+            async for event in ctx.agent.run_stream():
+                ctx.renderer.render(event)
+                if isinstance(event, AgentDone):
+                    elapsed = time.monotonic() - start
+                    ctx.renderer.render_done(event, elapsed, ctx.model, ctx.agent.token_usage)
+                elif isinstance(event, AgentError):
+                    sys.exit(1)
+
+        await ctx.agent.end_session()
+        from ..tools.mcp_loader import cleanup_mcp_connections
+        await cleanup_mcp_connections()
+
+    asyncio.run(_run())
+
+
 def _cmd_bench(args: argparse.Namespace) -> None:
     import logging
     if args.verbose:
@@ -250,6 +310,8 @@ def main() -> None:
             _cmd_session_load(args)
         else:
             _cmd_session_list(args)
+    elif cmd == "run":
+        _cmd_run(args)
     elif cmd == "bench":
         _cmd_bench(args)
     else:

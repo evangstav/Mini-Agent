@@ -179,6 +179,10 @@ class WriteTool(Tool):
             return ToolResult(success=False, error=str(e))
 
 
+# Shared edit history for undo support (file path → previous content)
+_edit_history: dict[str, str] = {}
+
+
 class EditTool(Tool):
     """Edit file by replacing text."""
 
@@ -236,6 +240,9 @@ class EditTool(Tool):
 
             new_content = content.replace(old_str, new_str, 1)
 
+            # Save for undo before writing
+            _edit_history[str(file_path)] = content
+
             # Lint check: check for NEW syntax errors (SWE-Agent approach: warn but write)
             old_lint = _lint_file(file_path, content)
             new_lint = _lint_file(file_path, new_content)
@@ -251,5 +258,50 @@ class EditTool(Tool):
                 verify_hint = " Run tests to verify this change."
 
             return ToolResult(success=True, content=f"Successfully edited {file_path}{lint_warning}{verify_hint}")
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+
+class UndoEditTool(Tool):
+    """Undo the last edit to a file."""
+
+    def __init__(self, workspace_dir: str = "."):
+        self.workspace_dir = Path(workspace_dir).absolute()
+
+    @property
+    def name(self) -> str:
+        return "undo_edit"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Revert a file to its state before the last edit_file call. "
+            "Only one level of undo is available per file. "
+            "Use when an edit was wrong and you want to start over."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to the file to undo."},
+            },
+            "required": ["path"],
+        }
+
+    async def execute(self, path: str) -> ToolResult:
+        try:
+            file_path = Path(path)
+            if not file_path.is_absolute():
+                file_path = self.workspace_dir / file_path
+
+            key = str(file_path)
+            if key not in _edit_history:
+                return ToolResult(success=False, error=f"No edit to undo for: {path}")
+
+            previous = _edit_history.pop(key)
+            file_path.write_text(previous, encoding="utf-8")
+            return ToolResult(success=True, content=f"Reverted {file_path} to previous state.")
         except Exception as e:
             return ToolResult(success=False, error=str(e))
