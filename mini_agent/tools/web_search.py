@@ -16,6 +16,10 @@ class WebSearchTool(Tool):
     """Search the web via DuckDuckGo HTML and return top results."""
 
     @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
     def name(self) -> str:
         return "web_search"
 

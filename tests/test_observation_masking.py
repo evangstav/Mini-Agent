@@ -14,7 +14,7 @@ class TestMaskObservations:
             msgs.append(Message(role="assistant", content=f"Using tool {i}", tool_calls=[]))
             msgs.append(Message(
                 role="tool",
-                content=f"Tool output {i} with lots of detail " * 20,
+                content=f"Tool output {i} with lots of detail " * 100,  # ~3000 chars, above snip threshold
                 tool_call_id=f"call_{i}",
                 name=f"tool_{i}",
             ))
@@ -29,7 +29,7 @@ class TestMaskObservations:
 
         # Old tool messages should be masked
         tool_msgs = [m for m in result if m.role == "tool"]
-        masked = [m for m in tool_msgs if "masked" in m.content.lower()]
+        masked = [m for m in tool_msgs if "snipped" in m.content.lower()]
         assert len(masked) > 0, "Expected some tool outputs to be masked"
 
     def test_preserves_recent_tool_outputs(self):
@@ -71,7 +71,7 @@ class TestMaskObservations:
         msgs = self._make_conversation(tool_results=5)
         result = mask_observations(msgs, keep_recent=6)
 
-        masked_tools = [m for m in result if m.role == "tool" and "masked" in m.content.lower()]
+        masked_tools = [m for m in result if m.role == "tool" and "snipped" in m.content.lower()]
         for m in masked_tools:
             assert m.tool_call_id is not None, "Masked tool should keep tool_call_id"
             assert m.name is not None, "Masked tool should keep name"
@@ -90,15 +90,19 @@ class TestMaskObservations:
         result = mask_observations([], keep_recent=6)
         assert result == []
 
-    def test_masked_content_includes_char_count(self):
+    def test_snipped_content_keeps_beginning_and_end(self):
+        """Snipped tool output should keep first half + last quarter."""
+        long_content = "START " + "x" * 3000 + " END"
         msgs = [
             Message(role="system", content="System"),
             Message(role="assistant", content="Using tool"),
-            Message(role="tool", content="x" * 500, tool_call_id="c1", name="t1"),
+            Message(role="tool", content=long_content, tool_call_id="c1", name="t1"),
             Message(role="user", content="Question"),
             Message(role="assistant", content="Answer"),
         ]
         result = mask_observations(msgs, keep_recent=2)
-        masked = [m for m in result if m.role == "tool" and "masked" in m.content.lower()]
-        assert len(masked) == 1
-        assert "500" in masked[0].content, "Masked message should include original char count"
+        snipped = [m for m in result if m.role == "tool" and "snipped" in m.content.lower()]
+        assert len(snipped) == 1
+        assert snipped[0].content.startswith("START"), "Should keep the beginning"
+        assert snipped[0].content.endswith(" END"), "Should keep the end"
+        assert len(snipped[0].content) < len(long_content), "Should be shorter than original"

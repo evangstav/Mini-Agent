@@ -15,6 +15,10 @@ class WebFetchTool(Tool):
     """Fetch a URL and return its text content (HTML stripped)."""
 
     @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
     def name(self) -> str:
         return "web_fetch"
 

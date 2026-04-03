@@ -1,12 +1,29 @@
 """File operation tools."""
 
 import ast
+import difflib
 import json
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from .base import Tool, ToolResult
+
+_MAX_DIFF_LINES = 60
+
+
+def _unified_diff(old: str, new: str, filepath: str) -> str:
+    """Generate a compact unified diff, capped at _MAX_DIFF_LINES."""
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+    diff = list(difflib.unified_diff(old_lines, new_lines, fromfile=filepath, tofile=filepath, n=3))
+    if not diff:
+        return "(no changes)"
+    if len(diff) > _MAX_DIFF_LINES:
+        remaining = len(diff) - _MAX_DIFF_LINES
+        diff = diff[:_MAX_DIFF_LINES]
+        diff.append(f"\n[... {remaining} more diff lines ...]\n")
+    return "".join(diff).rstrip()
 
 
 # Linter-integrated editing: validate syntax after modifications.
@@ -68,6 +85,10 @@ class ReadTool(Tool):
     def __init__(self, workspace_dir: str = ".", max_lines: int = _DEFAULT_MAX_LINES):
         self.workspace_dir = Path(workspace_dir).absolute()
         self.max_lines = max_lines
+
+    @property
+    def read_only(self) -> bool:
+        return True
 
     @property
     def name(self) -> str:
@@ -252,15 +273,18 @@ class EditTool(Tool):
 
             file_path.write_text(new_content, encoding="utf-8")
 
+            # Show diff so the LLM sees exactly what changed
+            diff = _unified_diff(content, new_content, str(file_path.relative_to(self.workspace_dir)))
+
             # Verification nudge for code files
             verify_hint = ""
             if file_path.suffix in (".py", ".js", ".ts", ".go", ".rs"):
                 verify_hint = (
-                    " Self-check: does this change fix the ROOT CAUSE? "
+                    "\nSelf-check: does this change fix the ROOT CAUSE? "
                     "Run tests to verify."
                 )
 
-            return ToolResult(success=True, content=f"Successfully edited {file_path}{lint_warning}{verify_hint}")
+            return ToolResult(success=True, content=f"Edited {file_path}{lint_warning}\n\n{diff}{verify_hint}")
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 

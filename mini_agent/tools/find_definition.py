@@ -21,6 +21,10 @@ class FindDefinitionTool(Tool):
         self.workspace_dir = Path(workspace_dir).absolute()
 
     @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
     def name(self) -> str:
         return "find_definition"
 

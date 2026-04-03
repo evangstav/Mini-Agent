@@ -145,24 +145,44 @@ def prune_tool_results(
 
 # --- Observation Masking ---
 
+_SNIP_THRESHOLD = 2000  # Only snip tool outputs longer than this
+
+
+def _snip_content(content: str) -> str:
+    """Keep first half + last quarter of long content, snip the middle.
+
+    Inspired by nano-claude-code: preserves the command/beginning and
+    conclusion/end while removing the verbose middle. Better signal-to-noise
+    than full masking.
+    """
+    if len(content) <= _SNIP_THRESHOLD:
+        return content
+    first_half = len(content) // 2
+    last_quarter = len(content) // 4
+    snipped = len(content) - first_half - last_quarter
+    return (
+        content[:first_half]
+        + f"\n[... {snipped} chars snipped ...]\n"
+        + content[-last_quarter:]
+    )
+
+
 def mask_observations(
     messages: list[Message],
     keep_recent: int = 6,
 ) -> list[Message]:
-    """Mask old tool outputs while preserving all action/reasoning history.
+    """Snip old tool outputs while preserving all action/reasoning history.
 
-    Based on NeurIPS 2025 finding (Lindenbauer et al.): observation masking
-    halves cost while matching LLM summarization quality. It avoids
-    "trajectory elongation" where summarization smooths over failures.
+    Two-level approach:
+    - Tool outputs >2000 chars outside the recent window: snipped (keep
+      first half + last quarter, remove verbose middle)
+    - All assistant messages, user messages, thinking: preserved in full
 
-    Replaces tool-result content with a short placeholder for all tool messages
-    outside the most recent *keep_recent* messages. The agent's own thoughts,
-    actions (tool calls), and reasoning are preserved in full.
+    Based on NeurIPS 2025 (Lindenbauer et al.) + nano-claude-code pattern.
     """
     if not messages or len(messages) <= keep_recent + 1:
         return messages
 
-    # Split: system + old conversation + recent
     system_msg = messages[0] if messages and messages[0].role == "system" else None
     conversation = messages[1:] if system_msg else messages
 
@@ -176,18 +196,18 @@ def mask_observations(
 
     for i, msg in enumerate(conversation):
         if i < boundary and msg.role == "tool":
-            # Mask tool output but preserve the tool call metadata
             content = msg.content if isinstance(msg.content, str) else ""
-            char_count = len(content)
-            result.append(Message(
-                role=msg.role,
-                content=f"[Previous tool output masked — {char_count} chars. Re-run if needed.]",
-                tool_call_id=msg.tool_call_id,
-                name=msg.name,
-            ))
+            snipped = _snip_content(content)
+            if snipped != content:
+                result.append(Message(
+                    role=msg.role,
+                    content=snipped,
+                    tool_call_id=msg.tool_call_id,
+                    name=msg.name,
+                ))
+            else:
+                result.append(msg)
         else:
-            # Keep everything else: user messages, assistant messages (with
-            # thinking and tool_calls), system messages — all preserved in full
             result.append(msg)
 
     return result
