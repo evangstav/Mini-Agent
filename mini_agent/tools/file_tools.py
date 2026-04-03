@@ -255,7 +255,10 @@ class EditTool(Tool):
             # Verification nudge for code files
             verify_hint = ""
             if file_path.suffix in (".py", ".js", ".ts", ".go", ".rs"):
-                verify_hint = " Run tests to verify this change."
+                verify_hint = (
+                    " Self-check: does this change fix the ROOT CAUSE? "
+                    "Run tests to verify."
+                )
 
             return ToolResult(success=True, content=f"Successfully edited {file_path}{lint_warning}{verify_hint}")
         except Exception as e:
