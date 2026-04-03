@@ -21,7 +21,7 @@ from .permissions import PermissionRule, PermissionRuleset, RuleAction, load_rul
 from .sandbox import Decision, PermissionMode, Sandbox
 from .schema import FunctionCall, LLMProvider, LLMResponse, Message, ToolCall
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Agent",
