@@ -344,10 +344,10 @@ class SWEBenchRunner:
                     pred = await self.run_instance(instance, workdir)
             predictions.append(pred)
 
-                # Write incrementally so we don't lose progress on crash
-                with open(out, "w") as f:
-                    for p in predictions:
-                        f.write(json.dumps(p) + "\n")
+            # Write incrementally so we don't lose progress on crash
+            with open(out, "w") as f:
+                for p in predictions:
+                    f.write(json.dumps(p) + "\n")
 
         logger.info("Wrote %d predictions to %s", len(predictions), out)
         return out
