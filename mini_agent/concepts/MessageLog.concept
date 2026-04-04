@@ -1,6 +1,6 @@
 concept MessageLog
   purpose
-    Maintain an ordered, append-only history of conversation messages partitioned by role.
+    Maintain an ordered, append-only history of conversation messages partitioned by role, with support for compaction and observation snipping.
 
   state
     messages: set Message
@@ -25,6 +25,10 @@ concept MessageLog
 
     append_tool_result (m: Message, output: String)
       post: messages += m; tool_msgs += m; role(m) = tool; content(m) = output; ordering(m) = |messages|
+
+    snip_observation (m: Message, keep_recent: Int)
+      pre: m in tool_msgs and ordering(m) < |messages| - keep_recent and |content(m)| > snip_threshold
+      post: content(m) = first_half(content(m)) + "[snipped]" + last_quarter(content(m))
 
     replace_prefix (old_msgs: set Message, summary: Message)
       pre: old_msgs subset of messages and system_msgs not in old_msgs

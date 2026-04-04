@@ -12,8 +12,8 @@ concept Memory [MemoryDir]
     content: memories -> one String
 
   actions
-    dream (transcript: String)
-      post: produces a set of create/update/delete operations from transcript; applies them
+    dream (existing: set MemoryFile, transcript: String) -> set Operation
+      post: LLM reviews transcript against existing memories; returns create/update/delete operations for durable knowledge worth preserving across sessions; applies operations to memories
 
     create_memory (m: MemoryFile, n: String, desc: String, t: MemType, c: String)
       pre: no m' in active where name(m') = n
@@ -32,5 +32,5 @@ concept Memory [MemoryDir]
 
   sync
     when Session.end (s, reason)
-      then dream (s.transcript)
+      then dream (active, s.transcript)
            rebuild_index ()

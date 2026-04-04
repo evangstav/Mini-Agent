@@ -1,6 +1,6 @@
 concept Permission [Mode]
   purpose
-    Decide whether a tool call should be allowed, denied, or gated for user approval based on a layered rule system and permission mode.
+    Decide whether a tool call should be allowed, denied, or gated for user approval based on a layered rule system, permission mode, and tool properties.
 
   state
     rules: set Rule
@@ -21,13 +21,13 @@ concept Permission [Mode]
     load_project (r: Rule, pattern: String, act: Action)
       post: rules += r; project_rules += r; tool_pattern(r) = pattern; action(r) = act
 
-    evaluate (tool: String, args: Args, d: Decision)
+    evaluate (tool: String, args: Args, read_only: Bool, d: Decision)
       post: decisions += d
             if matching rule found in reversed(rules): apply rule action
             else if Mode = full_access: allowed += d
-            else if Mode = readonly and tool is read_only: allowed += d
+            else if Mode = readonly and read_only: allowed += d
             else if Mode = readonly: denied += d
-            else if Mode = auto and tool is safe: allowed += d
+            else if Mode = auto and read_only: allowed += d
             else: gated += d
 
     grant (d: Decision)
@@ -40,4 +40,4 @@ concept Permission [Mode]
 
   sync
     when ToolExecution.request (tc, name, args)
-      then evaluate (name, args, new Decision)
+      then evaluate (name, args, is_read_only(tc), new Decision)

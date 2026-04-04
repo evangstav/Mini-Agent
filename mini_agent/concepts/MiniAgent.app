@@ -1,27 +1,34 @@
 app MiniAgent
   purpose
     A production-quality AI coding agent that executes bounded think-act-observe
-    cycles with tool use, permission sandboxing, context management, and
-    cross-session memory consolidation.
+    cycles with tool use, permission sandboxing, context management, phase gating,
+    codebase awareness, and cross-session memory consolidation.
 
   concepts
     Configuration
+    RepoMap [ProjectDir := workspace, CharBudget := 6000]
     MessageLog
-    ContextBudget [Window := 200000, Threshold := 150000]
+    ContextBudget [Window := 200000, ThresholdPct := 0.85, Reserve := 20000]
     ToolExecution [ToolRegistry := RegisteredTools]
     Permission [Mode := auto]
     AgentLoop [MaxSteps := 50]
+    PhaseGating [ExploreRatio := 0.3, LastResortRatio := 0.8]
     Session [SessionId := UUID]
     Memory [MemoryDir := ".claude/memory"]
 
   sync
+    // Repo map injected into system prompt on startup
+    when Session.start (s)
+      then RepoMap.get ()
+           MessageLog.init (new Message, system_prompt + RepoMap.inject())
+
     // Agent loop drives tool execution
     when AgentLoop.act ()
       then ToolExecution.request (tc, name, args)
 
-    // Permission gates tool execution
+    // Permission gates tool execution using tool properties
     when ToolExecution.request (tc, name, args)
-      then Permission.evaluate (name, args, new Decision)
+      then Permission.evaluate (name, args, is_read_only(tc), new Decision)
 
     // Tool results feed back into the message log
     when ToolExecution.succeed (tc, content)
@@ -33,17 +40,28 @@ app MiniAgent
     when AgentLoop.think ()
       then MessageLog.append_assistant (new Message, response)
 
-    // Context budget tracks message growth
-    when MessageLog.append_user (m, text)
-      then ContextBudget.record_growth (estimate(text))
-    when MessageLog.append_assistant (m, text)
-      then ContextBudget.record_growth (estimate(text))
-    when MessageLog.append_tool_result (m, output)
-      then ContextBudget.record_growth (estimate(output))
+    // Context budget polls each step (not reactive on individual appends)
+    when AgentLoop.act ()
+      then ContextBudget.check (log)
+    when ContextBudget.maybe_compact (log)
+      then MessageLog.snip_observation (old_tool_msgs)
+           MessageLog.replace_prefix (old_msgs, summary)
 
-    // Compaction when budget exceeded
-    when ContextBudget.compact ()
-      then MessageLog.replace_prefix (old_msgs, summary)
+    // Phase gating monitors progress and injects guidance
+    when AgentLoop.begin (limit)
+      then PhaseGating.init (limit)
+    when AgentLoop.act ()
+      then PhaseGating.tick ()
+           PhaseGating.check_explore_budget ()
+           PhaseGating.check_last_resort ()
+    when AgentLoop.complete ()
+      then PhaseGating.check_verification (true)
+    when ToolExecution.succeed (tc, content)
+      where tool_name(tc) in ("edit_file", "write_file")
+      then PhaseGating.record_edit ()
+    when ToolExecution.succeed (tc, content)
+      where tool_name(tc) = "bash" and content contains "test"
+      then PhaseGating.record_test ()
 
     // Session lifecycle brackets the agent loop
     when AgentLoop.begin (limit)
@@ -57,5 +75,5 @@ app MiniAgent
 
     // Memory consolidation after session ends
     when Session.end (s, reason)
-      then Memory.dream (s.transcript)
+      then Memory.dream (active, s.transcript)
            Memory.rebuild_index ()

@@ -1,38 +1,18 @@
-concept ContextBudget [Window, Threshold]
+concept ContextBudget [Window, ThresholdPct, Reserve]
   purpose
-    Monitor conversation size against a context window and trigger compaction when the threshold is crossed.
+    Monitor conversation size against a context window and trigger compaction when the threshold is crossed, using a two-pass strategy of snipping then summarization.
 
   state
-    usage: one Int
-    window: one Int
     threshold: one Int
     needs_compaction: one Bool
 
   actions
-    init (w: Window, t: Threshold)
-      post: window = w; threshold = t; usage = 0; needs_compaction = false
+    init (w: Window, pct: ThresholdPct, r: Reserve)
+      post: threshold = w * pct - r; needs_compaction = false
 
-    record_growth (tokens: Int)
-      post: usage += tokens; needs_compaction = (usage >= threshold)
+    check (log: MessageLog)
+      post: needs_compaction = (estimate_tokens(log.messages) >= threshold)
 
-    record_shrink (tokens: Int)
-      post: usage -= tokens; needs_compaction = (usage >= threshold)
-
-    compact ()
-      pre: needs_compaction = true
-      post: needs_compaction = false
-
-    reset ()
-      post: usage = 0; needs_compaction = false
-
-  sync
-    when MessageLog.append_user (m, text)
-      then record_growth (estimate(text))
-    when MessageLog.append_assistant (m, text)
-      then record_growth (estimate(text))
-    when MessageLog.append_tool_result (m, output)
-      then record_growth (estimate(output))
-    when MessageLog.replace_prefix (old, summary)
-      then record_shrink (estimate(old) - estimate(summary))
-    when MessageLog.clear ()
-      then reset ()
+    maybe_compact (log: MessageLog)
+      pre: needs_compaction
+      post: snip old tool outputs in log (keep beginning + end); if still over threshold, summarize old turns via LLM; needs_compaction = false

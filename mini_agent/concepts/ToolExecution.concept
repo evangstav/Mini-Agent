@@ -13,11 +13,13 @@ concept ToolExecution [ToolRegistry]
     tool_name: calls -> one String
     arguments: calls -> one Args
     result: calls -> lone Result
+    is_read_only: calls -> one Bool
+    is_undoable: calls -> one Bool
 
   actions
     request (tc: ToolCall, name: String, args: Args)
       pre: name in ToolRegistry
-      post: calls += tc; requested += tc; tool_name(tc) = name; arguments(tc) = args
+      post: calls += tc; requested += tc; tool_name(tc) = name; arguments(tc) = args; is_read_only(tc) = ToolRegistry[name].read_only; is_undoable(tc) = ToolRegistry[name].undoable
 
     permit (tc: ToolCall)
       pre: tc in requested

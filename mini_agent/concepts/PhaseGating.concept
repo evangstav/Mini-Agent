@@ -1,0 +1,49 @@
+concept PhaseGating [ExploreRatio, LastResortRatio]
+  purpose
+    Prevent premature commitment by monitoring agent progress and injecting reasoning checkpoints when the agent explores too long without acting, or tries to finish without verifying.
+
+  state
+    edited: one Bool
+    tested: one Bool
+    step_count: one Int
+    max_steps: one Int
+    nudge_fired: one Bool
+    last_resort_fired: one Bool
+
+  actions
+    init (max: Int)
+      post: edited = false; tested = false; step_count = 0; max_steps = max; nudge_fired = false; last_resort_fired = false
+
+    record_edit ()
+      post: edited = true
+
+    record_test ()
+      post: tested = true
+
+    tick ()
+      post: step_count += 1
+
+    check_explore_budget ()
+      pre: step_count >= max_steps * ExploreRatio and not edited and not nudge_fired
+      post: nudge_fired = true
+      // inject: "State which file contains the bug, explain root cause, describe fix, THEN edit"
+
+    check_last_resort ()
+      pre: step_count >= max_steps * LastResortRatio and not edited and not last_resort_fired
+      post: last_resort_fired = true
+      // inject: "You must commit to a fix now"
+
+    check_verification (completing: Bool)
+      pre: completing and edited and not tested
+      post: tested = true
+      // inject: "You edited code but haven't run tests. Please verify."
+
+  sync
+    when AgentLoop.act ()
+      then tick ()
+    when ToolExecution.succeed (tc, content)
+      where tool_name(tc) in ("edit_file", "write_file")
+      then record_edit ()
+    when ToolExecution.succeed (tc, content)
+      where tool_name(tc) = "bash" and content contains "test"
+      then record_test ()

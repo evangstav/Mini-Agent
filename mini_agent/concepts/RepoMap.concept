@@ -1,0 +1,23 @@
+concept RepoMap [ProjectDir, CharBudget]
+  purpose
+    Provide structural awareness of the codebase by generating and caching a compact skeleton of file paths, classes, and function signatures.
+
+  state
+    skeleton: lone String
+    cached: one Bool
+    cache_mtime: lone Timestamp
+    project_dir: one Path
+
+  actions
+    generate ()
+      post: skeleton = AST-parsed signatures from all Python files in project_dir, within CharBudget; cached = true; cache_mtime = now
+
+    invalidate ()
+      pre: any .py file in project_dir has mtime > cache_mtime
+      post: cached = false
+
+    get () -> String
+      post: if not cached then generate(); return skeleton
+
+    inject (prompt: String) -> String
+      post: return prompt + "# Codebase Structure (read-only)\n" + skeleton
