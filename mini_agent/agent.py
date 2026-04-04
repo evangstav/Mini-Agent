@@ -146,25 +146,26 @@ class Agent:
                 # Compact context if needed
                 await self._budget.maybe_compact(self.log, self.llm, self.hooks)
 
-                # Phase transition nudge: if we're 30% through budget without editing, push to action
+                # Phase transition nudge: if we're 30% through budget without editing, encourage focus
                 explore_budget = max(10, self.max_steps * 3 // 10)
                 if step == explore_budget and not _edited_files:
-                    logger.info("Phase nudge at step %d: no edits yet, pushing to action", step)
+                    logger.info("Phase nudge at step %d: no edits yet, encouraging localization", step)
                     self.log.append_user(
-                        f"You've spent {step} steps exploring without making any edits. "
-                        f"You MUST now localize the issue and start implementing a fix. "
-                        f"If you're unsure of the exact fix, make your best attempt — "
-                        f"a wrong fix that can be iterated on is better than no fix at all."
+                        f"You've spent {step} steps exploring. Before editing, please:\n"
+                        f"1. State which file and function you believe contains the bug.\n"
+                        f"2. Explain the root cause in one sentence.\n"
+                        f"3. Describe the fix you plan to make.\n"
+                        f"Then implement the fix. Do NOT start editing until you've done steps 1-3."
                     )
 
-                # Last-resort nudge: if 80% through budget without editing, make a desperate attempt
+                # Last-resort nudge: if 80% through budget without editing, push harder
                 last_resort = self.max_steps * 4 // 5
                 if step == last_resort and not _edited_files:
                     logger.warning("Last-resort nudge at step %d: still no edits", step)
                     self.log.append_user(
-                        f"CRITICAL: You have only {self.max_steps - step} steps left and haven't made any edits. "
-                        f"Write your best-guess fix NOW, even if you're not confident. An imperfect fix is "
-                        f"better than no fix."
+                        f"You have only {self.max_steps - step} steps left. "
+                        f"You must commit to a fix now. State the file and function, "
+                        f"then make the edit. An imperfect fix is better than no fix."
                     )
 
                 # Think: call LLM with streaming
