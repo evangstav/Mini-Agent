@@ -113,47 +113,77 @@ def _extract_file_skeleton(source: str, filepath: str) -> list[str]:
     return lines
 
 
+class RepoMap:
+    """Codebase skeleton generator matching the RepoMap concept spec.
+
+    Actions: generate, invalidate, get, inject.
+    """
+
+    def __init__(self, project_dir: str, char_budget: int = 6000) -> None:
+        self.root = Path(project_dir).resolve()
+        self.char_budget = char_budget
+        self._skeleton: str | None = None
+        self._cache_path = self.root / ".runtime" / "repo_map.md"
+
+    def invalidate(self) -> bool:
+        """Check if any .py file is newer than cache. Returns True if invalidated."""
+        if self._skeleton is None:
+            return True
+        if not self._cache_path.exists():
+            return True
+        cache_mtime = self._cache_path.stat().st_mtime
+        py_files = [f for f in self.root.rglob("*.py") if _should_include(f, self.root)]
+        newest = max((f.stat().st_mtime for f in py_files), default=0) if py_files else 0
+        if newest > cache_mtime:
+            self._skeleton = None
+            return True
+        return False
+
+    def generate(self) -> str:
+        """Generate fresh skeleton from AST parsing."""
+        skeleton = _build_skeleton(self.root, self.char_budget)
+        # Write cache
+        if skeleton:
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self._cache_path.write_text(skeleton, encoding="utf-8")
+            logger.debug("Repo map cached to: %s", self._cache_path)
+        self._skeleton = skeleton
+        return skeleton
+
+    def get(self) -> str:
+        """Return skeleton, generating or regenerating if needed."""
+        if self._skeleton is None or self.invalidate():
+            # Try loading from cache first
+            if self._cache_path.exists() and not self.invalidate():
+                self._skeleton = self._cache_path.read_text(encoding="utf-8")
+            else:
+                self.generate()
+        return self._skeleton or ""
+
+    def inject(self, prompt: str) -> str:
+        """Inject skeleton into a prompt with read-only header."""
+        skeleton = self.get()
+        if not skeleton:
+            return prompt
+        return (
+            prompt
+            + "\n\n# Codebase Structure (read-only context)\n\n"
+            "_This is an auto-generated map of the project for your reference. "
+            "Do NOT edit, delete, or reorganize these files unless the user explicitly asks you to._\n\n"
+            + skeleton
+        )
+
+
 def generate_repo_map(
     project_dir: str,
     max_chars: int = 6000,
     cache: bool = True,
 ) -> str:
-    """Generate a compact codebase skeleton for context injection.
-
-    Args:
-        project_dir: Root directory of the project.
-        max_chars: Maximum characters for the skeleton output.
-        cache: If True, cache to .runtime/repo_map.md and reuse if fresh.
-
-    Returns:
-        Markdown-formatted skeleton string.
-    """
-    root = Path(project_dir).resolve()
-
-    # Check cache
-    if cache:
-        cache_path = root / ".runtime" / "repo_map.md"
-        if cache_path.exists():
-            cache_mtime = cache_path.stat().st_mtime
-            py_files = [f for f in root.rglob("*.py") if _should_include(f, root)]
-            newest = max((f.stat().st_mtime for f in py_files), default=0) if py_files else 0
-            if newest <= cache_mtime:
-                logger.debug("Repo map cache hit: %s", cache_path)
-                content = cache_path.read_text(encoding="utf-8")
-                if len(content) <= max_chars:
-                    return content
-
-    # Generate fresh
-    skeleton = _build_skeleton(root, max_chars)
-
-    # Write cache
-    if cache and skeleton:
-        cache_path = root / ".runtime" / "repo_map.md"
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(skeleton, encoding="utf-8")
-        logger.debug("Repo map cached to: %s", cache_path)
-
-    return skeleton
+    """Backward-compatible wrapper. Use RepoMap class for new code."""
+    repo_map = RepoMap(project_dir, char_budget=max_chars)
+    if not cache:
+        return repo_map.generate()
+    return repo_map.get()
 
 
 def _build_skeleton(root: Path, max_chars: int) -> str:

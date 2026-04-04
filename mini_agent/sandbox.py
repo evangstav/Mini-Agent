@@ -230,17 +230,18 @@ class Sandbox:
         )
         self.permission_rules = permission_rules
 
-    def check(self, tool_name: str, arguments: dict[str, Any]) -> Decision:
+    def check(self, tool_name: str, arguments: dict[str, Any], read_only: bool | None = None) -> Decision:
         """Decide whether a tool call should be allowed, denied, or gated.
 
-        Permission rules (if configured) are evaluated first. If a rule matches,
-        its action overrides the mode-based default. If no rule matches, the
-        standard mode logic applies.
+        Args:
+            tool_name: Name of the tool being called.
+            arguments: Tool arguments.
+            read_only: If provided, use the tool's self-declared read_only flag
+                instead of the hardcoded _SAFE_TOOLS lookup. None means fall back
+                to the hardcoded set.
 
-        Returns:
-            Decision.ALLOW  — execute without prompting
-            Decision.DENY   — block the call entirely
-            Decision.ASK    — prompt the user for approval
+        Permission rules (if configured) are evaluated first. If a rule matches,
+        its action overrides the mode-based default.
         """
         # Evaluate permission rules first (if any)
         if self.permission_rules is not None:
@@ -253,14 +254,15 @@ class Sandbox:
             return Decision.ALLOW
 
         if self.mode == PermissionMode.READONLY:
-            return self._check_readonly(tool_name, arguments)
+            return self._check_readonly(tool_name, arguments, read_only)
 
         # AUTO mode
-        return self._check_auto(tool_name, arguments)
+        return self._check_auto(tool_name, arguments, read_only)
 
-    def _check_readonly(self, tool_name: str, arguments: dict[str, Any]) -> Decision:
+    def _check_readonly(self, tool_name: str, arguments: dict[str, Any], read_only: bool | None = None) -> Decision:
         """Readonly: only read tools allowed, everything else denied."""
-        if tool_name in _READONLY_TOOLS:
+        is_safe = read_only if read_only is not None else (tool_name in _READONLY_TOOLS)
+        if is_safe:
             # Web tools still need domain check
             if tool_name in ("web_search", "web_fetch"):
                 return self._check_web(tool_name, arguments)
@@ -275,11 +277,12 @@ class Sandbox:
 
         return Decision.DENY
 
-    def _check_auto(self, tool_name: str, arguments: dict[str, Any]) -> Decision:
+    def _check_auto(self, tool_name: str, arguments: dict[str, Any], read_only: bool | None = None) -> Decision:
         """Auto: safe reads allowed, writes gated for approval."""
-        # Safe tools always allowed
-        if tool_name in _SAFE_TOOLS:
-            # Web tools need domain check
+        # Use tool's self-declared read_only flag if available, fall back to hardcoded set
+        is_safe = read_only if read_only is not None else (tool_name in _SAFE_TOOLS)
+        if is_safe:
+            # Web tools still need domain check even if read_only
             if tool_name in ("web_search", "web_fetch"):
                 return self._check_web(tool_name, arguments)
             return Decision.ALLOW

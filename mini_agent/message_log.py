@@ -87,6 +87,48 @@ class MessageLog:
         new_log._messages = messages
         return new_log
 
+    def snip_observations(self, keep_recent: int = 6, snip_threshold: int = 2000) -> None:
+        """Snip old tool outputs in-place, keeping beginning + end.
+
+        Matches the MessageLog concept's snip_observation action.
+        Only modifies tool messages older than keep_recent that exceed snip_threshold.
+        """
+        if len(self._messages) <= keep_recent + 1:
+            return
+
+        system_offset = 1 if self._messages and self._messages[0].role == "system" else 0
+        conversation = self._messages[system_offset:]
+
+        if len(conversation) <= keep_recent:
+            return
+
+        boundary = len(conversation) - keep_recent
+
+        for i in range(boundary):
+            msg = conversation[i]
+            if msg.role != "tool":
+                continue
+            content = msg.content if isinstance(msg.content, str) else ""
+            if len(content) <= snip_threshold:
+                continue
+
+            # Snip: keep first half + last quarter
+            first_half = len(content) // 2
+            last_quarter = len(content) // 4
+            snipped = len(content) - first_half - last_quarter
+            new_content = (
+                content[:first_half]
+                + f"\n[... {snipped} chars snipped ...]\n"
+                + content[-last_quarter:]
+            )
+            # Replace in-place
+            self._messages[system_offset + i] = Message(
+                role=msg.role,
+                content=new_content,
+                tool_call_id=msg.tool_call_id,
+                name=msg.name,
+            )
+
     def estimate_tokens(self) -> int:
         """Conservative token estimate: ~4 chars per token (tuned for code-heavy context)."""
         total_chars = 0

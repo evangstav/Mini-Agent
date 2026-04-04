@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 from .audit import AuditLogger
 from .context import SystemPromptBuilder, ToolResultStore, estimate_tokens
 from .context_budget import ContextBudget
+from .phase_gating import PhaseGating
 from .events import (
     AgentCancelled,
     AgentDone,
@@ -132,8 +133,7 @@ class Agent:
         try:
             await self._ensure_session_started()
             logger.info("Agent run started (max_steps=%d, session=%s)", self.max_steps, self.session_id)
-            _edited_files = False
-            _ran_tests = False
+            gating = PhaseGating(self.max_steps)
 
             for step in range(self.max_steps):
                 if cancel_event and cancel_event.is_set():
@@ -146,27 +146,12 @@ class Agent:
                 # Compact context if needed
                 await self._budget.maybe_compact(self.log, self.llm, self.hooks)
 
-                # Phase transition nudge: if we're 30% through budget without editing, encourage focus
-                explore_budget = max(10, self.max_steps * 3 // 10)
-                if step == explore_budget and not _edited_files:
-                    logger.info("Phase nudge at step %d: no edits yet, encouraging localization", step)
-                    self.log.append_user(
-                        f"You've spent {step} steps exploring. Before editing, please:\n"
-                        f"1. State which file and function you believe contains the bug.\n"
-                        f"2. Explain the root cause in one sentence.\n"
-                        f"3. Describe the fix you plan to make.\n"
-                        f"Then implement the fix. Do NOT start editing until you've done steps 1-3."
-                    )
-
-                # Last-resort nudge: if 80% through budget without editing, push harder
-                last_resort = self.max_steps * 4 // 5
-                if step == last_resort and not _edited_files:
-                    logger.warning("Last-resort nudge at step %d: still no edits", step)
-                    self.log.append_user(
-                        f"You have only {self.max_steps - step} steps left. "
-                        f"You must commit to a fix now. State the file and function, "
-                        f"then make the edit. An imperfect fix is better than no fix."
-                    )
+                # Phase gating: inject guidance at phase transitions
+                gating.tick()
+                for check in (gating.check_explore_budget, gating.check_last_resort):
+                    nudge = check()
+                    if nudge:
+                        self.log.append_user(nudge)
 
                 # Think: call LLM with streaming
                 logger.debug("Step %d: calling LLM", step)
@@ -212,14 +197,9 @@ class Agent:
 
                 # No tool calls → task complete (with verification gate)
                 if not response.tool_calls:
-                    # If agent edited files but never ran tests, nudge it to verify
-                    if _edited_files and not _ran_tests and step < self.max_steps - 1:
-                        logger.info("Verification gate: agent edited files but didn't run tests, nudging")
-                        self.log.append_user(
-                            "You edited code but haven't run any tests to verify your changes. "
-                            "Please run the relevant tests before finishing."
-                        )
-                        _ran_tests = True  # Don't nudge twice
+                    verification = gating.check_verification()
+                    if verification and step < self.max_steps - 1:
+                        self.log.append_user(verification)
                         continue
 
                     logger.info("Agent completed at step %d", step + 1)
@@ -239,15 +219,8 @@ class Agent:
                     self._running = False
                     return
 
-                # Track edits and test runs for the verification gate
-                for tc in response.tool_calls:
-                    fn = tc.function.name
-                    if fn in ("edit_file", "write_file"):
-                        _edited_files = True
-                    if fn == "bash":
-                        cmd = tc.function.arguments.get("command", "")
-                        if any(kw in cmd for kw in ("pytest", "python -m pytest", "test", "npm test", "go test", "cargo test")):
-                            _ran_tests = True
+                # Track edits and test runs for phase gating
+                gating.track_tool_calls(response.tool_calls)
 
                 # Act: execute tool calls, Observe: collect results
                 async for event in self._executor.execute_batch(response.tool_calls, self.token_usage):

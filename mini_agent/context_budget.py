@@ -54,15 +54,10 @@ class ContextBudget:
         if self.threshold <= 0:
             return False
 
-        from .context import compact_messages, mask_observations
+        from .context import compact_messages
 
-        # Pass 1: Observation masking (free, no LLM call)
-        masked = mask_observations(log.messages)
-        if len(masked) < len(log.messages) or any(
-            m1.content != m2.content for m1, m2 in zip(masked, log.messages)
-            if isinstance(m1.content, str) and isinstance(m2.content, str)
-        ):
-            log.replace_prefix(masked)
+        # Pass 1: Observation snipping (free, no LLM call)
+        log.snip_observations()
 
         # Pass 2: LLM compaction if still over threshold
         old_count = len(log)

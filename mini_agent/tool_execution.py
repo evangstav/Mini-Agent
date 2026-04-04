@@ -60,14 +60,18 @@ class ToolExecutor:
         self._result_messages = []
         tool_tasks: list[tuple[str, str, dict]] = []
 
-        # Phase 1: Permission gating
+        # Phase 1: Permission gating (with tool property tracking per concept)
         for tc in tool_calls:
             tc_id = tc.id
             fn_name = tc.function.name
             args = tc.function.arguments
 
-            decision = self.sandbox.check(fn_name, args)
-            logger.debug("Tool %s: sandbox decision=%s", fn_name, decision.value)
+            # Track tool properties per the ToolExecution concept
+            tool = self.tools.get(fn_name)
+            is_read_only = tool.read_only if tool else None
+
+            decision = self.sandbox.check(fn_name, args, read_only=is_read_only)
+            logger.debug("Tool %s: sandbox decision=%s (read_only=%s)", fn_name, decision.value, is_read_only)
 
             if decision == Decision.DENY:
                 async for event in self._deny(tc_id, fn_name,
